@@ -104,6 +104,68 @@ env: node: No such file or directory
 
 **教训**：任何"先停服务再起服务"的动作，都要把"起得来"验证放在"停"之前。
 
+## 安全审计（v0.1.2）
+
+一次独立对抗审计 + 自审的结果。**H1 是真实存在、且当时正在生效的漏洞。**
+
+### H1（高）路由完全没有鉴权 —— 已修
+
+`webServer` 不做任何鉴权：cookie / Origin / Host 检查只发生在 harness 自己的
+RPC 通道和静态首页里，**任何插件注册的 `webServer` 路由默认对任意来源开放**。
+实测（无 cookie）：
+
+```
+GET  /                          -> 401    ← harness 自己的路由有栅栏
+GET  /dsh-updater/api/state     -> 200    ← 我的路由没有，泄露仓库路径/HEAD/日志
+POST /dsh-updater/api/cancel    -> 200    ← 带 Origin: http://evil.example + text/plain 也被接受
+```
+
+后果：用户只要访问任意一个恶意网页，那个页面就能 POST `/api/update`
+（简单请求，无需预检）→ 在 harness 仓库里执行 `git pull && pnpm install && pnpm run build`
+= 上游任意提交 / lockfile / postinstall 脚本造成的代码执行；还能 `/api/restart` 打死
+dsh web，或读 `/api/state`。DNS rebinding 还能读到响应。
+
+修法：handler 第一行复用 harness 自己的判定 ——
+
+```js
+const rejection = ctx.connection.requestRejection(req)   // Host 白名单 + 同源 + cookie
+if (rejection !== undefined) { res.writeHead(rejection); res.end(...); return }
+```
+
+并把 `connection` 加进 `inject`（缺了它就拒绝加载，而不是裸奔）。
+
+### 中危（全部已修）
+
+| # | 问题 | 修法 |
+| --- | --- | --- |
+| M1 | `/api/update` 冲突时返回 `ok:true`（`publicState()` 覆盖了 `result.ok`） | 展开顺序改为 `{...publicState(), ...result}` |
+| M2 | `check` 与 `update` 互斥只靠 `phase`，晚到的 `setPhase('idle')` 会抹掉正在跑的更新 | 两个入口都同时挡住 `checking` 与 `updating` |
+| M3 | 取消后的收尾回调会覆盖新一轮状态，可导致两个流水线并发跑同一工作区 | 加 `runId` 代次，旧回调无权改写 |
+| M4 | `state.running` 被**所有**子进程覆写，`/cancel` 会误杀一次普通 git 查询 | 拆出专用 `state.pipeline`，只杀它 |
+| M5 | 流水线写死 `origin master`，与快照用的 `origin/HEAD` 不一致 | 用当前分支自己的 upstream，pull 显式指定分支 |
+| M6 | 上游引用解析不出来时静默退化成 `behind:0`，永久显示"已是最新" | 解析失败即返回 `ok:false` + 明确原因 |
+| M7 | stdout/stderr 混流，git 的 `fatal:` 文本被当成 sha / 分支名 | 分流采集；`isRepo` 改用 `rev-parse --is-inside-work-tree` 的退出码判定 |
+
+### 低危（已修）
+
+- `/api/restart` 丢掉启动参数（`--port` 等），现在复用 `process.argv` 原样重启
+- 客户端把宿主的重启错误吞掉换成"连不上"，现在显示真实原因
+- `resetLog()` 重置 `seq` 会让增量拉取永远拿不到内容 → seq 改为单调；客户端也加了游标回退保护
+- 流水线无超时 → 加 30 分钟兜底；插件卸载时回收子进程（原先会留下孤儿构建）
+- 缓存快照不做形状校验 → 严格校验 + 客户端取值防御（原先畸形缓存会让整行渲染崩掉且无法自愈）
+- `install.mjs`：备份无限堆积 → 只留最近 3 个；校验 `name`；profile 形状异常不再抛未捕获异常
+- `restart-web.sh`：缺 `lsof` 时会写出假的 `ready` → 预检直接失败；`$PATH`/`$LOG` 嵌入前转义
+- 重启日志无限增长 → 超过 1MB 清空
+- `package.json` 的 `files` 漏了 `scripts/`，打包安装后没有安装脚本
+
+### 审计确认无问题的部分
+
+`sh()` 是正确 POSIX 单引号转义，所有进 shell 的路径/引用都被它包住（无命令注入）；
+commit subject 与 git ref 从不进 shell；前端无 DOM/URL 注入；提交行与 ahead/behind
+解析正确；前缀匹配按路径段；路由 try/catch 与 JSON 形状正确；日志环形缓冲有界；
+客户端槽位注册与同族插件一致。另外**实测否定**了一个疑似的孤儿进程问题：
+SIGTERM 到 node 派生的 `bash -c` 会连同前台子树一起结束。
+
 ## 开发
 
 ```sh

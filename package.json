@@ -1,6 +1,6 @@
 {
   "name": "@local/dsh-auto-update",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "description": "DSH Web 自动检测更新：在「设置 → 通用」里显示 deepseek-harness 仓库的上游提交，一键 git pull + pnpm install + pnpm run build。",
   "license": "MIT",
@@ -15,6 +15,9 @@
   "files": [
     "lib/index.js",
     "lib/client.js",
+    "scripts/install.mjs",
+    "scripts/restart-web.sh",
+    "scripts/build-demo.mjs",
     "dsh-plugin.json",
     "cordis.patch.yml",
     "README.md"

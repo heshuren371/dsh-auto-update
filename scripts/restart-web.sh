@@ -37,9 +37,17 @@ fail() {
   exit 1
 }
 
+# 把值转义成可以安全嵌进双引号 shell 字符串的形式。
+esc_dq() {
+  printf '%s' "$1" | sed 's/[\\"`$]/\\&/g'
+}
+
 sleep "$DELAY"
 
 # ---- 预检：在完全不动现有进程的前提下，确认新进程真的能起来 ----
+# 没有 lsof 就既找不到旧进程、也判断不了端口是否空出来，后面会写出假的 "ready"。
+command -v lsof >/dev/null 2>&1 || fail "PATH 里找不到 lsof，无法判断端口占用"
+
 NODE_BIN="${NODE_BIN:-$(command -v node || true)}"
 [ -n "$NODE_BIN" ] || fail "PATH 里找不到 node"
 "$NODE_BIN" --version >/dev/null 2>&1 || fail "node 不可执行：$NODE_BIN"
@@ -53,7 +61,8 @@ DSH_ENTRY="$("$NODE_BIN" -e 'const fs=require("fs");process.stdout.write(fs.real
 
 # 预检全过，下面才开始动现有进程。
 QUOTED_ROOT="$(printf '%s' "$ROOT" | sed "s/'/'\\\\''/g")"
-LAUNCH="cd '$QUOTED_ROOT' && exec \"$NODE_BIN\" \"$DSH_ENTRY\" web --no-open >>\"$LOG\" 2>&1"
+Q_LOG="$(esc_dq "$LOG")"
+LAUNCH="cd '$QUOTED_ROOT' && exec \"$NODE_BIN\" \"$DSH_ENTRY\" web --no-open >>\"$Q_LOG\" 2>&1"
 
 if [ "$CHECK_ONLY" = "1" ]; then
   echo "预检通过"
@@ -85,11 +94,16 @@ fi
 : >> "$LOG"
 echo "[restart-web] 于 $(date -u +%Y-%m-%dT%H:%M:%SZ) 重启（旧 pid=${OLD_PID:-none}）" >> "$LOG"
 
+# 端口必须真的空出来，否则新进程只会 bind 失败然后被 launchd 反复重启。
+if lsof -ti ":$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
+  fail "端口 $PORT 仍被占用，不启动第二个实例"
+fi
+
 # 优先让 launchd 托管：本脚本自己可能就是被 launchd 拉起的作业，
 # 若新进程只是它的后台子进程，作业结束时会被一起回收。
 if command -v launchctl >/dev/null 2>&1; then
   launchctl remove dsh-web 2>/dev/null || true
-  if ! launchctl submit -l dsh-web -- /bin/sh -c "export PATH=\"$PATH\"; $LAUNCH"; then
+  if ! launchctl submit -l dsh-web -- /bin/sh -c "export PATH=\"$(esc_dq "$PATH")\"; $LAUNCH"; then
     fail "launchctl submit 失败"
   fi
 else
