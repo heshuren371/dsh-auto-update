@@ -11,6 +11,11 @@ set -u
 DELAY="${1:-45}"
 PORT=3080
 ROOT="${DSH_WEB_ROOT:-$HOME}"
+
+# 从 launchd 之类的精简环境启动时，PATH 里没有 node/homebrew，需要自己补齐。
+PATH="/Users/heshuren/.nvm/versions/node/v24.18.0/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+export PATH
+
 DSH_BIN="${DSH_BIN:-$(command -v dsh)}"
 LOG="$ROOT/.dsh-updater-restart.log"
 STATUS="$ROOT/.dsh-updater-restart.status"
@@ -35,8 +40,16 @@ fi
 
 : > "$LOG"
 cd "$ROOT" || exit 1
-nohup "$DSH_BIN" web --no-open >>"$LOG" 2>&1 &
-echo $! > "$ROOT/.dsh-updater-restart.pid"
+
+# 拉起新进程。优先让 launchd 托管：本脚本自己可能就是被 launchd 拉起的作业，
+# 若新进程只是它的后台子进程，作业结束时会被一起回收。
+if command -v launchctl >/dev/null 2>&1; then
+  launchctl remove dsh-web 2>/dev/null || true
+  launchctl submit -l dsh-web -- /bin/sh -c "cd \"$ROOT\" && exec \"$DSH_BIN\" web --no-open >>\"$LOG\" 2>&1"
+else
+  nohup "$DSH_BIN" web --no-open >>"$LOG" 2>&1 &
+  echo $! > "$ROOT/.dsh-updater-restart.pid"
+fi
 
 count=0
 while [ "$count" -lt 300 ]; do
