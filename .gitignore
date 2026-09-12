@@ -1,0 +1,5 @@
+# 构建产物与本地杂物
+node_modules/
+*.log
+*.tgz
+.DS_Store

@@ -1,0 +1,101 @@
+{
+  "manifestVersion": "0.15",
+  "id": "local.dsh-auto-update",
+  "name": "DSH 自动更新（Auto Update）",
+  "version": "0.1.0",
+  "facets": {
+    "host": {
+      "entry": "lib/index.js",
+      "apiVersion": "v1alpha1"
+    }
+  },
+  "requires": {
+    "contracts": [
+      {
+        "apiVersion": "webserver.dsh/v1alpha1",
+        "kind": "HttpPrefixRoutes",
+        "optional": false
+      },
+      {
+        "apiVersion": "browser.ui.dsh/v1alpha1",
+        "kind": "ContributionHost",
+        "optional": true
+      }
+    ]
+  },
+  "permissions": [
+    {
+      "name": "shell.exec",
+      "scope": "git / pnpm 命令，工作目录为 harness 仓库（默认 /Users/heshuren/deepseek-harness）",
+      "reason": "检测上游更新并执行 git pull + pnpm install + pnpm run build"
+    },
+    {
+      "name": "fs.write",
+      "scope": "harness 仓库（.git、构建产物）以及 $DSH_HOME/dsh-auto-update-cache.json",
+      "reason": "写入回滚点分支、拉取提交、构建产物，并缓存上次检测结果"
+    },
+    {
+      "name": "net.egress",
+      "scope": "https://github.com/deepseek-ai/deepseek-harness（经由 git fetch）",
+      "reason": "查询上游是否有新提交"
+    },
+    {
+      "name": "process.control",
+      "scope": "dsh web 自身进程",
+      "reason": "更新完成后用于「重启生效」，仅在用户点击时触发"
+    }
+  ],
+  "contributes": {
+    "commands": [],
+    "x-dev.dsh-std.extensions": [
+      {
+        "id": "local.dsh-auto-update.browser",
+        "apiVersion": "browser.ui.dsh/v1alpha1",
+        "kind": "LocalModule",
+        "name": "browser",
+        "spec": {
+          "module": "lib/client.js",
+          "requirements": []
+        }
+      },
+      {
+        "id": "local.dsh-auto-update.settings-row",
+        "apiVersion": "browser.ui.dsh/v1alpha1",
+        "kind": "SettingsGeneralItemSlot",
+        "name": "auto-update",
+        "spec": {
+          "slot": "settings.general.item",
+          "id": "auto-update",
+          "order": 30,
+          "note": "设置 → 通用 里的一行；id 为自有值，不会覆盖内置行"
+        }
+      },
+      {
+        "id": "local.dsh-auto-update.routes",
+        "apiVersion": "webserver.dsh/v1alpha1",
+        "kind": "HttpPrefixRoutes",
+        "name": "dsh-updater",
+        "spec": {
+          "prefix": "/dsh-updater",
+          "endpoints": [
+            "GET /api/state",
+            "POST /api/check",
+            "POST /api/update",
+            "POST /api/cancel",
+            "POST /api/restart"
+          ]
+        }
+      }
+    ]
+  },
+  "license": "MIT",
+  "x-dsh-transition": {
+    "activation": "当前 entry 为 Cordis 插件形状（exports { apply, inject, name }）",
+    "clientInject": [
+      "@deepseek-ai/dsh-client-runtime",
+      "@deepseek-ai/dsh-client-locale",
+      "@deepseek-ai/dsh-client-ui-conversation"
+    ],
+    "bundlePatch": "cordis.patch.yml"
+  }
+}

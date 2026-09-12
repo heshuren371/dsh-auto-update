@@ -1,0 +1,8 @@
+# @local/dsh-auto-update bundle patch — 挂载「DSH 更新」这一行设置。
+# 宿主注入 webServer（注册 /dsh-updater 路由：检测 + 更新流水线 + 重启）。
+# 客户端在 settings.general.item 槽位注册自有 id 的行（order 30，排在内置行之后）。
+# 零核心改动：卸载即从装配图摘除，路由与设置行一并清理。
+
+- insert:
+    - id: auto-update
+      name: '@local/dsh-auto-update'
