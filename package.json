@@ -2,7 +2,7 @@
   "name": "@local/dsh-auto-update",
   "version": "0.1.3",
   "private": true,
-  "description": "DSH Web 自动检测更新：在「设置 → 通用」里显示 deepseek-harness 仓库的上游提交，一键 git pull + pnpm install + pnpm run build。",
+  "description": "在「设置 → 通用」里一键检测并更新 DeepSeek Harness：git pull + pnpm install + pnpm run build，带进度日志、回滚点与重启。",
   "license": "MIT",
   "author": "heshuren371",
   "type": "module",
@@ -20,7 +20,10 @@
     "scripts/build-demo.mjs",
     "dsh-plugin.json",
     "cordis.patch.yml",
-    "README.md"
+    "README.md",
+    "LICENSE",
+    "docs/DESIGN.md",
+    "docs/settings-general.png"
   ],
   "dsh": {
     "bundle": {
@@ -34,5 +37,21 @@
         "@deepseek-ai/dsh-client-ui-conversation"
       ]
     }
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/heshuren371/dsh-auto-update.git"
+  },
+  "homepage": "https://github.com/heshuren371/dsh-auto-update#readme",
+  "bugs": {
+    "url": "https://github.com/heshuren371/dsh-auto-update/issues"
+  },
+  "keywords": [
+    "dsh",
+    "deepseek-harness",
+    "plugin",
+    "auto-update",
+    "updater",
+    "cordis"
+  ]
 }

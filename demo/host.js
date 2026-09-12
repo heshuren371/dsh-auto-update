@@ -3,7 +3,7 @@
  * 只用宿主 Builtin（ctx / harness / console）+ shell 服务，不依赖 node 模块。
  * 与持久化插件 lib/index.js 行为一致，差别仅在于运行命令的方式。
  */
-const REPO = '/Users/heshuren/deepseek-harness'
+const REPO = '/path/to/deepseek-harness'  // 演示用：改成你自己的 harness 克隆路径
 const UPSTREAM = 'https://github.com/deepseek-ai/deepseek-harness'
 const MAX_LOG = 400
 const FETCH_TIMEOUT_MS = 120000

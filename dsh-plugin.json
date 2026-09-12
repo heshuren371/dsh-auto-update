@@ -26,7 +26,7 @@
   "permissions": [
     {
       "name": "shell.exec",
-      "scope": "git / pnpm 命令，工作目录为 harness 仓库（默认 /Users/heshuren/deepseek-harness）",
+      "scope": "git / pnpm 命令，工作目录为 harness 仓库（自动探测，可用 DSH_UPDATE_REPO 覆盖）",
       "reason": "检测上游更新并执行 git pull + pnpm install + pnpm run build"
     },
     {
@@ -97,5 +97,8 @@
       "@deepseek-ai/dsh-client-ui-conversation"
     ],
     "bundlePatch": "cordis.patch.yml"
+  },
+  "source": {
+    "repository": "https://github.com/heshuren371/dsh-auto-update"
   }
 }

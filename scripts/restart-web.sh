@@ -24,9 +24,22 @@ if [ "$DELAY" = "--check" ]; then
   DELAY=0
 fi
 
-# 从 launchd 之类的精简环境启动时，PATH 里没有 node/homebrew，需要自己补齐。
-PATH="/Users/heshuren/.nvm/versions/node/v24.18.0/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+# 从 launchd 之类的精简环境启动时，PATH 里可能没有 node / homebrew。
+# 把常见安装位置补进来（存在才加），不写死任何具体用户路径。
+for _dir in \
+  "$HOME"/.nvm/versions/node/*/bin \
+  "$HOME"/.volta/bin \
+  "$HOME"/.local/share/fnm/aliases/default/bin \
+  "$HOME"/.local/bin \
+  "$HOME"/.bun/bin \
+  /opt/homebrew/bin \
+  /usr/local/bin \
+  /usr/bin /bin /usr/sbin /sbin
+do
+  [ -d "$_dir" ] && PATH="$_dir:$PATH"
+done
 export PATH
+unset _dir
 
 LOG="$ROOT/.dsh-updater-restart.log"
 STATUS="$ROOT/.dsh-updater-restart.status"
