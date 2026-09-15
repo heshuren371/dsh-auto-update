@@ -53,6 +53,7 @@ body = replaceRegion(body, 'transport', `
       update: () => host.call("update", {}),
       cancel: () => host.call("cancel", {}),
       restart: () => host.call("restart", {}),
+      retryPlugins: () => host.call("retryPlugins", {}),
     };
 `)
 

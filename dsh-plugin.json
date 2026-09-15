@@ -2,7 +2,7 @@
   "manifestVersion": "0.15",
   "id": "local.dsh-auto-update",
   "name": "DSH 自动更新（Auto Update）",
-  "version": "0.1.3",
+  "version": "0.2.0",
   "facets": {
     "host": {
       "entry": "lib/index.js",
@@ -26,13 +26,13 @@
   "permissions": [
     {
       "name": "shell.exec",
-      "scope": "git / pnpm 命令，工作目录为 harness 仓库（自动探测，可用 DSH_UPDATE_REPO 覆盖）",
-      "reason": "检测上游更新并执行 git pull + pnpm install + pnpm run build"
+      "scope": "git / pnpm 命令，工作目录为 harness 主仓库及其 $DSH_HOME/dsh-auto-update/slots 试运行副本（主仓库自动探测，可用 DSH_UPDATE_REPO 覆盖）",
+      "reason": "检测上游更新，在独立副本里执行 git checkout + pnpm install + pnpm run build，并用 --version 预检候选入口"
     },
     {
       "name": "fs.write",
-      "scope": "harness 仓库（.git、构建产物）以及 $DSH_HOME/dsh-auto-update-cache.json",
-      "reason": "写入回滚点分支、拉取提交、构建产物，并缓存上次检测结果"
+      "scope": "harness 主仓库（.git、worktree 元数据）以及 $DSH_HOME/dsh-auto-update/**（试运行副本、运行指针 runtime.json、切换状态、禁用列表、缓存）",
+      "reason": "创建/更新蓝绿试运行副本、记录回滚点与运行版本、保存切换结果和临时禁用列表"
     },
     {
       "name": "net.egress",
@@ -41,8 +41,8 @@
     },
     {
       "name": "process.control",
-      "scope": "dsh web 自身进程",
-      "reason": "更新完成后用于「重启生效」，仅在用户点击时触发"
+      "scope": "dsh web 自身进程；端口上已确认属于 dsh web 的残留进程",
+      "reason": "仅在用户点「重启生效」时，由独立切换器清掉旧进程并按「先启动校验、失败回滚」的顺序完成切换"
     }
   ],
   "contributes": {
@@ -82,7 +82,8 @@
             "POST /api/check",
             "POST /api/update",
             "POST /api/cancel",
-            "POST /api/restart"
+            "POST /api/restart",
+            "POST /api/plugins/retry"
           ]
         }
       }

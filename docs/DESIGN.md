@@ -3,13 +3,88 @@
 本文是 [README](../README.md) 的补充材料：架构细节、一次安全审计的完整结果，
 以及性能与进程管线的测试记录。只想装插件的话看 README 就够了。
 
+## v0.2：安全更新重构（事故驱动）
+
+### 复盘：2026-09-15 那次「更新把 dsh web 搞崩了」
+
+事实链：
+
+1. 插件更新的是 `~/deepseek-harness`（git 克隆），但当时真正运行的 `dsh web`
+   是 npm 全局安装 —— **更新对象和运行对象不是同一份代码**。过去几次「更新成功」
+   其实没有作用到运行中的服务，却每次都承担了重启风险。
+2. 旧重启逻辑杀掉旧进程后用 `nohup ... &` 起新进程。新进程其实是健康的
+   （13:41:47 起，PPID 1），但用户按习惯再敲 `dsh web` 时，端口已被这个孤儿
+   进程占着，直接 `EADDRINUSE` 退出。表面的「web 崩了」实际是
+   「重启后的服务没人知道它在跑」。
+3. 此后每次重复启动都在同一端口上互相踩，错误堆栈又长得像插件树加载失败，
+   把排查带偏。
+
+暴露的结构性问题：更新目标可能不是运行目标；重启没有「新版本真的可用」的验收；
+失败后没有自动恢复路径。
+
+### 现在的流水线
+
+| 步骤 | 做什么 | 失败时 |
+| --- | --- | --- |
+| snapshot | 记录主仓库 HEAD 到 `dsh-rollback` | 中止，不碰服务 |
+| fetch | `git fetch --prune origin`，解析目标提交（默认分支 upstream，`DSH_UPDATE_CHANNEL=tag` 时用最新 `dsh-v*` 标签） | 中止 |
+| stage | 在**非 active** 的插槽里 `git worktree` checkout 目标提交 | 中止 |
+| install | 在副本里 `pnpm install` | 中止，主仓库/服务不动 |
+| build | 在副本里 `pnpm run build` | 中止 |
+| canary | 空闲端口 + 真实 profile 起候选入口，解析 token URL、HTTP 校验 | 报错；若失败信息指向第三方 loader entry，生成 `quarantine.yml` 禁用该条后重试（≤8 个） |
+| switch | 用户点「重启生效」后，`scripts/switch.mjs` 独立完成切换 | 自动用旧入口回滚并写状态 |
+
+### 不变量
+
+1. **正在运行的服务在试运行通过之前绝不被触碰**；试运行使用空闲端口，不占用真实端口。
+2. 任何一步失败，运行状态都不回退到比操作前更差（切换失败由独立进程用旧入口回滚）。
+3. 端口清理只针对命令行里确认是 `dsh ... web` 的进程；不认识的占用者只报错，不杀。
+   如果旧服务由 launchd 托管，切换器先按 pid 反查并移除作业（`launchctl remove`），
+   避免 keepalive 在旧进程死后立刻拉起第二个实例抢 3080。
+4. `runtime.json`（含 token URL）以 0600 保存；`quarantine.yml` 只写入通过字符校验的 entry id。
+5. 蓝绿两套副本：切换后上一套仍然完整，回滚不需要重新构建。
+
+### 组件
+
+| 文件 | 职责 |
+| --- | --- |
+| `lib/util.js` | shell 转义、进程组回收、行缓冲、原子写文件（单测可直接 import） |
+| `lib/probe.js` | 空闲端口、候选入口试运行、loader 冲突解析、禁用 patch 生成 |
+| `scripts/switch.mjs` | 独立切换器：摘掉托管旧服务的 launchd 作业（keepalive 会把旧进程拉回来）→ 等旧进程退出 → 清端口残留 → 起新版本 → 校验 → 失败回滚 |
+| `scripts/selftest.mjs` | 纯函数单测；`--integration` 额外做一次真实 profile 试运行 |
+| `scripts/switchtest.mjs` | 切换器的沙箱集成测试：成功路径 + 故障回滚路径（全程用空闲端口） |
+| `scripts/use-managed-dsh.mjs` | 生成 `~/.local/bin/dsh` shim：终端 `dsh` 优先运行 `active-entry` 的受管版本，指针失效回退原命令；`--check` / `--remove` |
+| `lib/index.js` | 路由、状态机、蓝绿流水线、隔离重试、切换任务编排 |
+| `lib/client.js` | 设置行 UI：进度、日志、运行版本、禁用列表、切换状态 |
+
+### 状态文件
+
+- `$DSH_HOME/dsh-auto-update/runtime.json`：`active`（正在运行的副本/提交/版本/token 地址）、
+  `candidate`（已通过试运行、等待切换的新版本）、`quarantined`、`lastUpdate`。
+- `$DSH_HOME/dsh-auto-update/switch-status.json`：切换器的状态机
+  （`starting` → `ready` / `rolling-back` / `failed`），界面直接展示。
+- `$DSH_HOME/dsh-auto-update/switch.log`：新旧进程的启动日志。
+
+### 已知限制
+
+- 上游 `master` 是 alpha 开发线，破坏性更新仍会发生。本插件的目标是
+  **「发生了也不会把服务带崩」**，而不是阻止上游破坏。
+- 被隔离的插件需要自身升级/替换；插件对 harness 的运行时契约无法静态预检，
+  只能靠真实试运行暴露。
+- 每次更新需要第二份 `node_modules`（pnpm 硬链接，实际增量远小于 1.6 GB）。
+- 禁用依据 loader entry id。如果某插件没有稳定 id，只会整体失败并报错，不会猜。
+- 从「不受管」的运行方式迁移过来需要一次「更新 → 重启生效」；这是有意的，
+  因为切换前必须先有一个通过试运行的候选。
+
 ## 它做了什么
 
 | 位置 | 文件 | 说明 |
 | --- | --- | --- |
-| 宿主 | `lib/index.js` | 注册 `/dsh-updater` HTTP 路由；执行 git 检测与更新流水线 |
+| 宿主 | `lib/index.js` | 注册 `/dsh-updater` HTTP 路由；执行 git 检测与蓝绿更新流水线 |
 | 客户端 | `lib/client.js` | 在 `settings.general.item` 槽位注册一行设置（id 为 `auto-update`） |
 | 装配 | `cordis.patch.yml` | bundle patch，`insert` 一行插件条目 |
+| 试运行 | `lib/probe.js` | 候选入口在空闲端口上的启动与校验 |
+| 切换 | `scripts/switch.mjs` | 独立进程完成安全重启与失败回滚 |
 | demo | `demo/` | 由 `scripts/build-demo.mjs` 从 `lib/client.js` 生成的动态插件代码 |
 
 ### 检测

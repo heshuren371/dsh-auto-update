@@ -8,7 +8,8 @@ const UPSTREAM = 'https://github.com/deepseek-ai/deepseek-harness'
 const MAX_LOG = 400
 const FETCH_TIMEOUT_MS = 120000
 
-const STEP_LABEL = { snapshot: '记录回滚点', pull: '拉取上游提交', install: '安装依赖', build: '构建产物' }
+// 演示版仍按旧的「就地更新」流程展示；正式插件的安全流程见 docs/DESIGN.md。
+const STEP_LABEL = { snapshot: '记录回滚点', fetch: '拉取上游提交', stage: '准备试运行副本', install: '安装依赖', build: '构建产物', canary: '试运行校验' }
 
 function q(value) {
   return "'" + String(value).replaceAll("'", "'\\''") + "'"
@@ -26,6 +27,7 @@ function apply(ctx) {
     proc: null,
     startedAt: null,
     finishedAt: null,
+    quarantined: [],
   }
 
   function push(line) {
@@ -134,6 +136,10 @@ function apply(ctx) {
       seq: state.seq,
       log: state.log.filter(function (entry) { return entry.seq > from }),
       snapshot: state.snapshot,
+      canary: null,
+      quarantined: state.quarantined,
+      runtime: { currentEntry: null, matchesActive: null, active: null, candidate: null, candidateCanaryOk: false, mustMigrate: false, channel: 'master' },
+      switch: null,
     }
   }
 
@@ -261,8 +267,13 @@ function apply(ctx) {
   }), 'auto-update demo: cancel')
 
   ctx.effect(() => harness.handle('restart', async () => {
-    return { ok: false, error: '演示版不执行重启，正式插件里这个按钮会真正重启 dsh web' }
+    return { ok: false, error: '演示版不执行重启，正式插件里这个按钮会由独立切换器完成安全重启' }
   }), 'auto-update demo: restart')
+
+  ctx.effect(() => harness.handle('retryPlugins', async () => {
+    state.quarantined = []
+    return payload(0)
+  }), 'auto-update demo: retryPlugins')
 
   push('插件已加载（演示版），仓库：' + REPO)
   push('点击「检查更新」即可比对上游提交。')

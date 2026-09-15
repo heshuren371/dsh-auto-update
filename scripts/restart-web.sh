@@ -65,9 +65,16 @@ NODE_BIN="${NODE_BIN:-$(command -v node || true)}"
 [ -n "$NODE_BIN" ] || fail "PATH 里找不到 node"
 "$NODE_BIN" --version >/dev/null 2>&1 || fail "node 不可执行：$NODE_BIN"
 
-DSH_BIN="${DSH_BIN:-$(command -v dsh || true)}"
-[ -n "$DSH_BIN" ] || fail "PATH 里找不到 dsh"
-DSH_ENTRY="$("$NODE_BIN" -e 'const fs=require("fs");process.stdout.write(fs.realpathSync(process.argv[1]))' "$DSH_BIN" 2>/dev/null || true)"
+# 优先用受管版本（dsh-auto-update 的 active-entry），没有才退回 PATH 上的 dsh。
+ACTIVE_ENTRY="${DSH_HOME:-$HOME/.dsh}/dsh-auto-update/active-entry"
+if [ -z "${DSH_BIN:-}" ] && [ -f "$ACTIVE_ENTRY" ] && [ -s "$ACTIVE_ENTRY" ]; then
+  DSH_ENTRY="$(cat "$ACTIVE_ENTRY")"
+  DSH_BIN="(active-entry)"
+else
+  DSH_BIN="${DSH_BIN:-$(command -v dsh || true)}"
+  [ -n "$DSH_BIN" ] || fail "PATH 里找不到 dsh"
+  DSH_ENTRY="$("$NODE_BIN" -e 'const fs=require("fs");process.stdout.write(fs.realpathSync(process.argv[1]))' "$DSH_BIN" 2>/dev/null || true)"
+fi
 [ -n "$DSH_ENTRY" ] || fail "无法解析 dsh 的 JS 入口：$DSH_BIN"
 [ -f "$DSH_ENTRY" ] || fail "dsh 入口不存在：$DSH_ENTRY"
 "$NODE_BIN" "$DSH_ENTRY" --version >/dev/null 2>&1 || fail "预检启动失败：$NODE_BIN $DSH_ENTRY --version"

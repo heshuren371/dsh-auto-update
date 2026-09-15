@@ -17,6 +17,7 @@
       update: () => host.call("update", {}),
       cancel: () => host.call("cancel", {}),
       restart: () => host.call("restart", {}),
+      retryPlugins: () => host.call("retryPlugins", {}),
     };
 
     const zh = {
@@ -24,17 +25,25 @@
       "loading": "正在读取版本信息…",
       "checking": "正在向 GitHub 检查上游提交…",
       "updating": "正在更新",
-      "done": "更新完成，重启 dsh web 后生效",
+      "done": "新版本已通过真实 profile 试运行，可重启生效",
       "idle.latest": "已是最新版本",
       "idle.never": "尚未检测，点「检查更新」比对上游提交",
+      "idle.migrate": "当前运行的不受更新管理；更新会先在副本里构建并试运行，通过后重启切换",
       "error.unknown": "更新出错了，请展开日志查看原因",
       // 注意：locale 字典的值必须是字符串，参数走 {占位符} 插值。
       // 写成 (n) => ... 只是在不传 params 时侥幸能用，传了就会炸。
       "idle.available": "发现 {count} 个新提交可更新",
       "meta": "当前 {version} · {short} · {branch}",
       "metaNoVersion": "当前 {short} · {branch}",
-      "dirty": "工作区有 {count} 项未提交改动（更新前会自动 stash）",
+      "dirty": "主仓库有 {count} 项未提交改动（不影响更新：更新在副本里进行）",
       "remote": "上游 {short} · {subject}",
+      "runtime.mismatch": "当前入口不是受管版本；点「重启生效」切到试运行通过的副本",
+      "runtime.ready": "新版本已通过试运行，点「重启生效」完成切换（失败会自动回滚）",
+      "runtime.managed": "受管版本 {version} · {short}",
+      "quarantined": "已临时禁用 {count} 个不兼容插件：{ids}",
+      "switch.rolledback": "上次切换失败，已自动回滚到旧版本：{error}",
+      "switch.failed": "上次切换失败：{error}",
+      "switch.ready": "上次切换成功（端口 {port}）",
       "origin.bad": "origin 指向的不是预期仓库，更新会被拒绝：{url}",
       "action.check": "检查更新",
       "action.checking": "检查中…",
@@ -45,16 +54,20 @@
       "action.logHide": "收起日志",
       "action.restart": "重启生效",
       "action.restartArmed": "确认重启？",
+      "action.retryPlugins": "重新启用插件",
+      "action.open": "打开 dsh web",
       "restart.hint": "重启会中断当前正在跑的对话，请先确认。",
       "restart.pending": "正在重启，本页稍后会断开…",
       "restart.started": "重启指令已发出，页面稍后会自动重连。",
       "error.prefix": "出错了：",
       "error.network": "无法连接到 dsh 宿主进程",
       "step.snapshot": "记录回滚点",
-      "step.pull": "拉取上游提交",
+      "step.fetch": "拉取上游提交",
+      "step.stage": "准备试运行副本",
       "step.install": "安装依赖",
       "step.build": "构建产物",
-      "rollback.hint": "如需回滚：git checkout dsh-rollback && pnpm install && pnpm run build",
+      "step.canary": "试运行校验",
+      "rollback.hint": "更新在独立副本里进行，正在运行的服务不受影响；如切换失败会自动回滚。",
       "render.error": "界面渲染出错了：",
     };
     const en = {
@@ -62,15 +75,23 @@
       "loading": "Reading version information…",
       "checking": "Checking upstream commits on GitHub…",
       "updating": "Updating",
-      "done": "Update finished — restart dsh web to apply",
+      "done": "New build passed the real-profile canary — restart to apply",
       "idle.latest": "Up to date",
       "idle.never": "Not checked yet — click Check to compare with upstream",
+      "idle.migrate": "Running build is unmanaged; updates are staged, canary-tested, then switched on restart",
       "error.unknown": "Update failed — expand the log for details",
       "idle.available": "{count} new commit(s) available",
       "meta": "{version} · {short} · {branch}",
       "metaNoVersion": "{short} · {branch}",
-      "dirty": "{count} uncommitted change(s) — stashed automatically before updating",
+      "dirty": "{count} uncommitted change(s) in the main repo (updates run in a staging copy)",
       "remote": "upstream {short} · {subject}",
+      "runtime.mismatch": "Current entry is not the managed build; click Restart to switch to the canary-tested copy",
+      "runtime.ready": "New build passed the canary — click Restart to switch (auto-rollback on failure)",
+      "runtime.managed": "Managed build {version} · {short}",
+      "quarantined": "{count} incompatible plugin(s) temporarily disabled: {ids}",
+      "switch.rolledback": "Previous switch failed and rolled back: {error}",
+      "switch.failed": "Previous switch failed: {error}",
+      "switch.ready": "Previous switch succeeded (port {port})",
       "origin.bad": "origin is not the expected repository; updates are refused: {url}",
       "action.check": "Check",
       "action.checking": "Checking…",
@@ -81,16 +102,20 @@
       "action.logHide": "Hide log",
       "action.restart": "Restart",
       "action.restartArmed": "Confirm restart?",
+      "action.retryPlugins": "Re-enable plugins",
+      "action.open": "Open dsh web",
       "restart.hint": "Restarting interrupts running conversations.",
       "restart.pending": "Restarting — this page will disconnect shortly…",
       "restart.started": "Restart requested; the page will reconnect shortly.",
       "error.prefix": "Error: ",
       "error.network": "Cannot reach the dsh host process",
       "step.snapshot": "Recording rollback point",
-      "step.pull": "Pulling upstream commits",
+      "step.fetch": "Fetching upstream commits",
+      "step.stage": "Preparing staging copy",
       "step.install": "Installing dependencies",
       "step.build": "Building artifacts",
-      "rollback.hint": "To roll back: git checkout dsh-rollback && pnpm install && pnpm run build",
+      "step.canary": "Canary boot with real profile",
+      "rollback.hint": "Updates run in a separate copy; the running service is untouched, and a failed switch rolls back automatically.",
       "render.error": "Render error: ",
     };
 
@@ -122,7 +147,7 @@
 `;
 
     /** 步骤 → 进度百分比（构建最耗时，权重最大）。 */
-    const STEP_PROGRESS = { snapshot: 8, pull: 22, install: 42, build: 84, done: 100 };
+    const STEP_PROGRESS = { snapshot: 5, fetch: 12, stage: 20, install: 40, build: 75, canary: 95, done: 100 };
 
     /** 状态点颜色：可用/成功用品牌色，失败用错误色。 */
     function dotStyle(tone) {
@@ -153,7 +178,13 @@
         };
       }
       const snapshot = state.snapshot;
-      if (snapshot === null || snapshot === undefined) return { text: t("idle.never"), tone: "muted" };
+      const runtimeMustMigrate = state.runtime !== null && typeof state.runtime === "object"
+        && state.runtime.mustMigrate === true;
+      if (snapshot === null || snapshot === undefined) {
+        return runtimeMustMigrate
+          ? { text: t("idle.migrate"), tone: "brand" }
+          : { text: t("idle.never"), tone: "muted" };
+      }
       // ok:false 表示宿主明确知道这份快照不可信（读不出仓库、上游引用解析不了），
       // 此时必须报错，绝不能显示"已是最新"。
       if (snapshot.ok === false) {
@@ -165,8 +196,18 @@
       }
       if (snapshot.isRepo === false) return { text: snapshot.error ?? t("error.network"), tone: "error", error: true };
       if (snapshot.updateAvailable === true) {
+        // 仓库已是最新、但当前入口不受管（例如 npm 全局安装）时，仍需要一次迁移式更新。
+        if ((snapshot.mustMigrate === true || runtimeMustMigrate)
+          && !(typeof snapshot.behind === "number" && snapshot.behind > 0)) {
+          return { text: t("idle.migrate"), tone: "brand" };
+        }
         return { text: t("idle.available", { count: snapshot.behind }), tone: "brand" };
       }
+      const runtimeSwitchable = state.runtime !== null && typeof state.runtime === "object"
+        && (state.runtime.canSwitch === true
+          || (state.runtime.matchesActive !== true && (state.runtime.active !== null || state.runtime.candidateCanaryOk === true)));
+      if (runtimeSwitchable) return { text: t("done"), tone: "ok" };
+      if (runtimeMustMigrate) return { text: t("idle.migrate"), tone: "brand" };
       return { text: t("idle.latest"), tone: "ok" };
     }
 
@@ -255,8 +296,10 @@
       const busy = pending !== null
         || (state !== null && (state.phase === "checking" || state.phase === "updating"));
       const checking = pending === "check" || (state !== null && state.phase === "checking");
+      const runtimeMustMigrate = state !== null && typeof state.runtime === "object" && state.runtime !== null
+        && state.runtime.mustMigrate === true;
       const canUpdate = snapshot !== null && snapshot.ok !== false && snapshot.isRepo !== false
-        && snapshot.updateAvailable === true && !busy;
+        && (snapshot.updateAvailable === true || runtimeMustMigrate) && !busy;
       const showBar = updating;
       const finished = state !== null && state.phase === "done";
 
@@ -274,6 +317,29 @@
           ? t("metaNoVersion", { short, branch })
           : t("meta", { version, short, branch });
       })();
+
+      // 运行指针 / 插件禁用 / 切换结果：字段都当作不可信输入处理，缺了就少显示。
+      const runtime = state !== null && typeof state.runtime === "object" && state.runtime !== null ? state.runtime : null;
+      const quarantined = state !== null && Array.isArray(state.quarantined) ? state.quarantined : [];
+      const switchInfo = state !== null && typeof state.switch === "object" && state.switch !== null ? state.switch : null;
+      // 可切换：有已试运行通过的候选，且当前入口不是它。
+      // 首次迁移时 matchesActive 是 null（还没有 active），所以判断条件是 !== true。
+      const runtimeSwitchable = runtime !== null && (runtime.canSwitch === true
+        || (runtime.matchesActive !== true && (runtime.active !== null || runtime.candidateCanaryOk === true)));
+      const runtimeMismatch = runtime !== null && runtime.matchesActive === false;
+      const restartReady = !busy && (finished || runtimeSwitchable);
+      const switchError = switchInfo !== null && typeof switchInfo.error === "string" && switchInfo.error.length > 0
+        ? switchInfo.error : "?";
+      const switchWarn = switchInfo === null
+        ? null
+        : switchInfo.phase === "ready"
+          ? (switchInfo.rolledBack === true ? t("switch.rolledback", { error: switchError }) : null)
+          : switchInfo.phase === "failed"
+            ? t("switch.failed", { error: switchError })
+            : null;
+      const switchUrl = switchInfo !== null && switchInfo.phase === "ready"
+        && typeof switchInfo.url === "string" && switchInfo.url.length > 0
+        ? switchInfo.url : null;
 
       return h("div", { className: "dsau-root" },
         h("div", { className: "dsau-row" },
@@ -298,6 +364,18 @@
             snapshot !== null && snapshot.originOk === false
               ? h("div", { className: "dsau-warn" }, t("origin.bad", { url: snapshot.originUrl ?? "?" }))
               : null,
+            runtimeMismatch ? h("div", { className: "dsau-warn" }, t("runtime.mismatch")) : null,
+            runtimeSwitchable && !runtimeMismatch
+              ? h("div", { className: "dsau-hint" }, t("runtime.ready"))
+              : null,
+            quarantined.length > 0
+              ? h("div", { className: "dsau-warn" }, t("quarantined", { count: quarantined.length, ids: quarantined.join(", ") }))
+              : null,
+            switchWarn !== null ? h("div", { className: "dsau-warn" }, switchWarn) : null,
+            switchUrl !== null
+              ? h("div", { className: "dsau-hint" },
+                h("a", { href: switchUrl, target: "_blank", rel: "noreferrer" }, t("action.open")))
+              : null,
             restartNote !== null ? h("div", { className: "dsau-hint" }, restartNote) : null,
           ),
           h("div", { className: "dsau-actions" },
@@ -320,7 +398,15 @@
                 disabled: !canUpdate,
                 onClick: () => { void act("update"); },
               }, t("action.update")),
-            finished
+            quarantined.length > 0
+              ? h("button", {
+                type: "button",
+                className: "dsau-btn",
+                disabled: pending !== null,
+                onClick: () => { void act("retryPlugins"); },
+              }, t("action.retryPlugins"))
+              : null,
+            restartReady
               ? h("button", {
                 type: "button",
                 className: armed ? "dsau-btn dsau-btn-danger" : "dsau-btn dsau-btn-primary",
