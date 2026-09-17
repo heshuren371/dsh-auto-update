@@ -163,6 +163,7 @@ node ~/deepseek-harness/apps/cli/lib/bin.js web
 ## 开发
 
 ```sh
+npm test                           # selftest（84 项）+ clienttest（123 项）
 node --check lib/index.js          # 宿主半
 node --check lib/client.js         # 客户端半
 node --check lib/probe.js
@@ -171,7 +172,8 @@ node --check scripts/switch.mjs
 node scripts/selftest.mjs          # 纯函数单测
 DSH_UPDATE_ENTRY=~/deepseek-harness/apps/cli/lib/bin.js \
   node scripts/selftest.mjs --integration   # 真实 profile 试运行（不碰 3080）
-node scripts/switchtest.mjs        # 切换器成功 + 回滚路径（空闲端口，不碰 3080）
+node scripts/selftest.mjs --pipeline        # 全流水线：副本构建+试运行（临时状态目录）
+node scripts/switchtest.mjs        # 切换器：外部进程安全 + 成功 + 回滚（空闲端口，不碰 3080）
 node scripts/build-demo.mjs        # 生成 demo/ 下的动态插件预览代码
 ```
 

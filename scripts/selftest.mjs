@@ -12,22 +12,24 @@
  * 集成测试会真实加载一次当前 profile（含已装插件），属于“可接受的副作用”，
  * 但绝不接触 3080 上的正在运行的服务。
  */
-import { execFileSync } from 'node:child_process'
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { execFileSync, spawnSync } from 'node:child_process'
+import { accessSync, constants, existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { canaryBoot } from '../lib/probe.js'
 import {
   findFreePort,
   httpStatus,
+  normalizeWebArgs,
   parseLoaderConflicts,
   parsePort,
   quarantinePatchText,
   stripPortArgs,
+  tailLines,
   withCanaryArgs,
   withQuarantineArg,
 } from '../lib/probe.js'
-import { makeLinePump, readJson, sh, writeJsonAtomic } from '../lib/util.js'
+import { ERROR_LINE_RE, createLineBuffer, isProcessAlive, makeLinePump, readJson, resolveGitBin, sh, writeJsonAtomic } from '../lib/util.js'
 
 let passed = 0
 let failed = 0
@@ -51,11 +53,34 @@ equal('sh 普通路径', sh('/a b/c'), "'/a b/c'")
 equal('parsePort 默认', parsePort(['web'], 3080), 3080)
 equal('parsePort 空格形式', parsePort(['web', '--port', '9000'], 3080), 9000)
 equal('parsePort 等号形式', parsePort(['web', '--port=9001'], 3080), 9001)
+equal('parsePort 上界 65535', parsePort(['--port=65535'], 3080), 65535)
+equal('parsePort 端口 0 合法', parsePort(['--port', '0'], 3080), 0)
+equal('parsePort 越界回落', parsePort(['--port', '65536'], 3080), 3080)
+equal('parsePort 等号越界回落', parsePort(['--port=70000'], 3080), 3080)
+equal('parsePort 负数回落', parsePort(['--port', '-1'], 3080), 3080)
+equal('parsePort 非数字回落', parsePort(['--port', 'abc'], 3080), 3080)
+equal('parsePort 空值回落', parsePort(['--port='], 3080), 3080)
+equal('parsePort 裸 --port 结尾回落', parsePort(['web', '--port'], 3080), 3080)
+equal('parsePort 取第一个命中', parsePort(['--port=4000', '--port=5000'], 3080), 4000)
+equal('parsePort 自定义 fallback', parsePort([], 9999), 9999)
 equal('stripPortArgs', stripPortArgs(['web', '--port', '9000', '--host', 'x']), ['web', '--host', 'x'])
+equal('stripPortArgs 剥掉尾部裸 --port', stripPortArgs(['web', '--port']), ['web'])
+equal('stripPortArgs 多处端口全剥掉', stripPortArgs(['web', '--port=1', '--port', '2', '--host', 'h']), ['web', '--host', 'h'])
 equal('withCanaryArgs', withCanaryArgs(['web', '--port=9000'], 1234), ['web', '--port', '1234', '--no-open'])
+equal('withCanaryArgs 保留其余参数', withCanaryArgs(['web', '--port', '9000', '--host', '0.0.0.0'], 1234), ['web', '--host', '0.0.0.0', '--port', '1234', '--no-open'])
+equal('withCanaryArgs 无旧端口', withCanaryArgs([], 1234), ['--port', '1234', '--no-open'])
 equal('withQuarantineArg 把 web 规范成 --profile web', withQuarantineArg(['web'], '/q.yml'), ['--patch', '/q.yml', '--profile', 'web'])
 equal('withQuarantineArg 保留已有 --profile', withQuarantineArg(['--profile', 'web', '--no-open'], '/q.yml'), ['--patch', '/q.yml', '--profile', 'web', '--no-open'])
 equal('withQuarantineArg 无文件', withQuarantineArg(['web'], null), ['web'])
+equal('withQuarantineArg 空文件名不加 --patch', withQuarantineArg(['web'], ''), ['web'])
+equal('withQuarantineArg 保留端口等参数', withQuarantineArg(['web', '--port', '1'], '/q.yml'), ['--patch', '/q.yml', '--profile', 'web', '--port', '1'])
+
+// -- normalizeWebArgs：要加 --patch 时 web 子命令必须改写成等价的 --profile web
+equal('normalizeWebArgs 改写 web 子命令', normalizeWebArgs(['web', '--no-open']), ['--profile', 'web', '--no-open'])
+equal('normalizeWebArgs 只有 web', normalizeWebArgs(['web']), ['--profile', 'web'])
+equal('normalizeWebArgs 已是 --profile 不变', normalizeWebArgs(['--profile', 'web', '--no-open']), ['--profile', 'web', '--no-open'])
+equal('normalizeWebArgs 不误伤 webserver', normalizeWebArgs(['webserver']), ['webserver'])
+equal('normalizeWebArgs 非数组返回空', normalizeWebArgs(null), [])
 
 // -- loader 冲突解析（用线上真实报错文本）
 const realError = [
@@ -73,12 +98,29 @@ equal('第三方插件条目可隔离', parseLoaderConflicts(pluginError).map((c
 equal('无括号包名', parseLoaderConflicts('failed to apply loader entry my-widget: nope').map((c) => [c.id, c.core]), [['my-widget', false]])
 equal('重复条目去重', parseLoaderConflicts(pluginError + '\n' + pluginError).length, 1)
 equal('恶意 id 不进入隔离名单', parseLoaderConflicts('failed to apply loader entry bad id: x').length, 0)
+equal('core 包判定 @deepseek-ai/*', parseLoaderConflicts('failed to apply loader entry my-thing (@deepseek-ai/dsh-host-x): boom').map((c) => [c.id, c.core]), [['my-thing', true]])
+equal('core 包判定 cordis:*', parseLoaderConflicts('failed to import loader entry foo (cordis:include): x').map((c) => [c.id, c.core]), [['foo', true]])
+equal('core 包判定 dsh-*', parseLoaderConflicts('failed to import loader entry foo (dsh-plugin-x): x').map((c) => [c.id, c.core]), [['foo', true]])
+equal('内核条目 id 判定', parseLoaderConflicts('failed to apply loader entry timer: x').map((c) => c.core), [true])
+equal('去重保留首次出现顺序', parseLoaderConflicts([pluginError, importError, pluginError].join('\n')).map((c) => c.id), ['music-player', 'bad-plugin-test'])
+equal('120 字符 id 在允许边界内', parseLoaderConflicts('failed to apply loader entry ' + 'a'.repeat(120) + ': x').length, 1)
+equal('121 字符 id 被拒', parseLoaderConflicts('failed to apply loader entry ' + 'a'.repeat(121) + ': x').length, 0)
+equal('带 scope 的合法 id', parseLoaderConflicts('failed to apply loader entry @scope/name-x (pkg): x').map((c) => c.id), ['@scope/name-x'])
+equal('空文本返回空', parseLoaderConflicts(''), [])
+equal('连续调用互不污染（lastIndex 复位）', [parseLoaderConflicts(pluginError).length, parseLoaderConflicts(pluginError).length], [1, 1])
 
 // -- 隔离 patch 文本
 const patch = quarantinePatchText(['music-player', "o'brien"])
 check('patch 使用 disabled: true', patch.includes("- id: 'music-player'\n  disabled: true"))
 check('patch 拒绝带引号的非法 id', !patch.includes("o'brien"))
 check('patch 拒绝非法 id', !quarantinePatchText(['bad id']).includes('bad id'))
+const patchEmpty = quarantinePatchText([])
+check('patch 空名单只留表头', (patchEmpty.match(/- id: /g) ?? []).length === 0 && patchEmpty.includes('dsh-auto-update'))
+const patchScope = quarantinePatchText(['@local/x.y', 'bad id', "o'brien", 'a\nb', 'a'.repeat(121)])
+check('patch 接纳 @scope/name 与点号', patchScope.includes("- id: '@local/x.y'\n  disabled: true"))
+check('patch 丢弃换行注入的 id', patchScope.includes('a\nb') === false)
+check('patch 丢弃超长 id', patchScope.includes('a'.repeat(121)) === false)
+check('patch 只保留一个合法 id', (patchScope.match(/- id: /g) ?? []).length === 1 && (patchScope.match(/disabled: true/g) ?? []).length === 1)
 
 // -- 行缓冲
 const lines = []
@@ -87,15 +129,78 @@ pump.push('abc')
 pump.push('def\nghi\n')
 pump.flush()
 equal('makeLinePump 分行', lines, ['abcdef', 'ghi'])
+const leftover = []
+const pumpTail = makeLinePump((line) => leftover.push(line), { maxPending: 8 })
+pumpTail.push('one\ntwo\nthr')
+pumpTail.flush()
+equal('makeLinePump flush 吐出无换行的残行', leftover, ['one', 'two', 'thr'])
 const truncated = []
 const pump2 = makeLinePump((line) => truncated.push(line), { maxPending: 4 })
 pump2.push('0123456789')
 check('makeLinePump 截断超长行', truncated.length === 1 && truncated[0].includes('已截断'))
+const truncated2 = []
+const pump3 = makeLinePump((line) => truncated2.push(line), { maxPending: 4 })
+pump3.push('0123456789')
+pump3.push('ok\n')
+equal('makeLinePump 截断后仍能继续分行', truncated2, ['0123 …（单行过长，已截断 6 字符）', 'ok'])
+const truncated3 = []
+const pump4 = makeLinePump((line) => truncated3.push(line))
+pump4.push('x'.repeat(20 * 1024))
+check('makeLinePump 默认上限 16KB', truncated3.length === 1 && truncated3[0].includes('已截断 4096 字符'), String(truncated3.length))
+
+// -- 有界行缓冲（pnpm/build 能刷几万行，只留关键错误行）
+const bounded = createLineBuffer({ maxLines: 3 })
+for (const line of ['a', 'b', 'c']) bounded.push(line)
+equal('createLineBuffer 未超限全保留', bounded.lines, ['a', 'b', 'c'])
+bounded.push('d')
+equal('createLineBuffer 溢出淘汰最旧普通行', bounded.lines, ['b', 'c', 'd'])
+const bounded2 = createLineBuffer({ maxLines: 3 })
+for (const line of ['error: boom', 'noise-1', 'noise-2', 'noise-3']) bounded2.push(line)
+equal('createLineBuffer 溢出优先保留错误行', bounded2.lines, ['error: boom', 'noise-2', 'noise-3'])
+const bounded3 = createLineBuffer({ maxLines: 2 })
+for (const line of ['error: one', 'error: two', 'error: three']) bounded3.push(line)
+equal('createLineBuffer 全是关键行时丢最旧', bounded3.lines, ['error: two', 'error: three'])
+const bounded4 = createLineBuffer({ maxLines: 2, priorityRe: null })
+for (const line of ['error: one', 'noise', 'error: two']) bounded4.push(line)
+equal('createLineBuffer 关闭优先级时严格保留末尾', bounded4.lines, ['noise', 'error: two'])
+check('ERROR_LINE_RE 认得 fatal/license', ERROR_LINE_RE.test('fatal: not a git repository') && ERROR_LINE_RE.test('You have not agreed to the Xcode license'))
+
+// -- 截尾输出
+equal('tailLines 取末尾 N 行', tailLines([1, 2, 3, 4, 5], 2), [4, 5])
+equal('tailLines 非数组返回空', tailLines('nope'), [])
+
+// -- git 解析：必须返回一个真能跑 --version 的可执行文件（/usr/bin/git 可能是 Xcode 许可 shim）
+const gitBin = resolveGitBin()
+check('resolveGitBin 返回存在的文件', gitBin !== 'git' && existsSync(gitBin), gitBin === 'git' ? '未找到可用 git，退回 PATH 上的 git' : gitBin)
+let gitRuns = false
+try {
+  accessSync(gitBin, constants.X_OK)
+  gitRuns = spawnSync(gitBin, ['--version'], { encoding: 'utf8', timeout: 10_000 }).status === 0
+} catch { /* 不存在 / 不可执行 */ }
+check('resolveGitBin --version 退出 0', gitRuns, gitBin)
+equal('resolveGitBin 结果被缓存', resolveGitBin(), gitBin)
+
+// -- 进程存活探测（切换器判断旧进程是否退出全靠它）
+check('isProcessAlive 当前进程为真', isProcessAlive(process.pid) === true)
+check('isProcessAlive 非法 pid 为假', isProcessAlive(0) === false && isProcessAlive(-1) === false && isProcessAlive(null) === false && isProcessAlive('123') === false)
 
 // -- 原子 JSON 读写
 const tmp = mkdtempSync(path.join(os.tmpdir(), 'dsh-updater-selftest-'))
 writeJsonAtomic(path.join(tmp, 'x.json'), { a: 1 })
 equal('writeJsonAtomic/readJson 往返', readJson(path.join(tmp, 'x.json')), { a: 1 })
+writeJsonAtomic(path.join(tmp, 'deep/nested.json'), { s: "a'b\n中文", list: [1, null, true] })
+equal('writeJsonAtomic 自动建目录且往返', readJson(path.join(tmp, 'deep/nested.json')), { s: "a'b\n中文", list: [1, null, true] })
+check('JSON 文件以换行结尾', readFileSync(path.join(tmp, 'x.json'), 'utf8').endsWith('}\n'))
+writeJsonAtomic(path.join(tmp, 'mode.json'), { token: 'secret' }, { mode: 0o600 })
+check('writeJsonAtomic 支持 mode（runtime.json 含 token，必须 0600）', (statSync(path.join(tmp, 'mode.json')).mode & 0o777) === 0o600)
+check('readJson 文件不存在返回 null', readJson(path.join(tmp, 'missing.json')) === null)
+const brokenJson = path.join(tmp, 'broken.json')
+writeFileSync(brokenJson, '{ not json')
+check('readJson 坏 JSON 返回 null', readJson(brokenJson) === null)
+writeFileSync(brokenJson, '123')
+check('readJson 标量返回 null', readJson(brokenJson) === null)
+writeFileSync(brokenJson, 'null')
+check('readJson null 返回 null', readJson(brokenJson) === null)
 rmSync(tmp, { recursive: true, force: true })
 
 // -- 客户端不能遮蔽模块级 runtime（否则 useEffect 里的 runtime.schedulePolling 会崩）

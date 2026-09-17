@@ -44,15 +44,29 @@
 4. `runtime.json`（含 token URL）以 0600 保存；`quarantine.yml` 只写入通过字符校验的 entry id。
 5. 蓝绿两套副本：切换后上一套仍然完整，回滚不需要重新构建。
 
+### v0.3：测试与健壮性补强（智能体团队）
+
+| 区域 | 问题 | 修法 / 证据 |
+| --- | --- | --- |
+| 宿主 | 每次点更新同步 `spawnSync xcrun`（最长 15s）阻塞 HTTP 事件循环 | 进程内缓存：正常结果永久复用、许可问题 TTL 60s、探测失败不缓存 |
+| 宿主 | `DSH_UPDATE_CHANNEL=tag` 时快照仍按分支 upstream 比较，界面显示的错误进度 | `readSnapshot` / `resolveTarget` 共用 `updateChannel()`+`latestReleaseTag()`，`behind` 相对目标计算；新增 `snapshot.channel`；tag 通道不再因 detached HEAD 拒绝 |
+| 宿主 | stderr 收集无上限（pnpm build 可刷数万行） | `util.createLineBuffer`（200 行有界，溢出优先淘汰最旧非 error/fatal/license 行）；30 万行实测峰值堆增量 62.6MB → 4.7MB，早期错误行仍被 `bestDetail` 挑中 |
+| 宿主 | 隔离预算检查晚于写内存，内存 9 / 磁盘 8 分叉 | 先查预算再写内存；新增 `MAX_CANARY_ATTEMPTS` 兜底与重试内取消检查；canary 子进程纳入 `state.children`（取消可秒杀、停用不留孤儿） |
+| 宿主 | 试运行超时被误诊为「早退（退出码 -1）」；token URL 跨 chunk 时漏检 | `exitedEarly` 区分崩溃/超时；4096 字符滚动尾巴拼接跨 chunk 地址 |
+| 宿主 | `Number.parseInt('9000abc')` 得到 9000，非法 `--port` 被当成合法端口 | `strictPort` 只接受 `^\d{1,5}$` 且 0..65535 |
+| 切换器 | `readFileTail` 把字节偏移当字符下标；中文日志下切片起点越过 token URL → 回滚被误判 `failed`（服务其实已恢复） | 改 `readFileSync` Buffer + `subarray` 按字节切；回滚 status 从 `failed` 变为 `ready/rolledBack=true` |
+| 客户端 | 迟到的 `/state` 响应可能把刚点「立即更新」的 `updating` 覆盖回 `idle` | 请求代次 `requestGenRef`：`act()` 发 POST 前自增作废在途 GET，`pull()` 代次变化则丢弃响应 |
+
 ### 组件
 
 | 文件 | 职责 |
 | --- | --- |
-| `lib/util.js` | shell 转义、进程组回收、行缓冲、原子写文件；**可用 git 解析**（Xcode 许可拦住 `/usr/bin/git` 时自动改用 CLT/Xcode 自带 git，见下） |
-| `lib/probe.js` | 空闲端口、候选入口试运行、loader 冲突解析、禁用 patch 生成 |
+| `lib/util.js` | shell 转义、进程组回收、行缓冲、有界错误行缓冲、原子写文件；**可用 git 解析**（Xcode 许可拦住 `/usr/bin/git` 时自动改用 CLT/Xcode 自带 git，见下） |
+| `lib/probe.js` | 空闲端口、候选入口试运行（可登记/回收子进程）、loader 冲突解析、禁用 patch 生成 |
 | `scripts/switch.mjs` | 独立切换器：摘掉托管旧服务的 launchd 作业（keepalive 会把旧进程拉回来）→ 等旧进程退出 → 清端口残留 → 起新版本 → 校验 → 失败回滚 |
-| `scripts/selftest.mjs` | 纯函数单测；`--integration` 额外做一次真实 profile 试运行 |
-| `scripts/switchtest.mjs` | 切换器的沙箱集成测试：成功路径 + 故障回滚路径（全程用空闲端口） |
+| `scripts/selftest.mjs` | 纯函数/边界单测（84 项）；`--integration` 真实 profile 试运行；`--pipeline` 全流水线 |
+| `scripts/clienttest.mjs` | 客户端渲染回归（123 项）：React/ctx stub 驱动 `lib/client.js`，覆盖 13 种 host state、事故原路径、迟到响应竞态、错误边界、zh/en 字典一致性 |
+| `scripts/switchtest.mjs` | 切换器沙箱集成测试：外部进程安全（绝不误杀）+ 成功路径 + 回滚路径，全程空闲端口 |
 | `scripts/use-managed-dsh.mjs` | 生成 `~/.local/bin/dsh` shim：终端 `dsh` 优先运行 `active-entry` 的受管版本，指针失效回退原命令；`--check` / `--remove` |
 | `lib/index.js` | 路由、状态机、蓝绿流水线、隔离重试、切换任务编排 |
 | `lib/client.js` | 设置行 UI：进度、日志、运行版本、禁用列表、切换状态 |
@@ -90,6 +104,9 @@ PATH 的最前面（pnpm 里的 git 调用一并受益）。worktree 回溯主�
 - 禁用依据 loader entry id。如果某插件没有稳定 id，只会整体失败并报错，不会猜。
 - 从「不受管」的运行方式迁移过来需要一次「更新 → 重启生效」；这是有意的，
   因为切换前必须先有一个通过试运行的候选。
+- v0.3 的测试边界：`clienttest` 覆盖渲染与 effect 路径，但不含真实浏览器 DOM 事件、
+  React 严格模式/并发与视觉断言；`selftest` 的 `resolveGitBin` 断言要求机器上存在
+  可用的 git（插件本身也依赖它）。
 
 ## 它做了什么
 

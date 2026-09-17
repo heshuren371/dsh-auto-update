@@ -1,12 +1,18 @@
 {
   "name": "@local/dsh-auto-update",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "private": true,
   "description": "在「设置 → 通用」里一键检测并更新 DeepSeek Harness：在蓝绿副本里构建、用真实 profile 试运行、通过后由独立切换器安全重启，失败自动回滚。",
   "license": "MIT",
   "author": "heshuren371",
   "type": "module",
   "main": "lib/index.js",
+  "scripts": {
+    "test": "node scripts/selftest.mjs && node scripts/clienttest.mjs",
+    "test:client": "node scripts/clienttest.mjs",
+    "test:switch": "node scripts/switchtest.mjs",
+    "test:pipeline": "node scripts/selftest.mjs --pipeline"
+  },
   "exports": {
     ".": "./lib/index.js",
     "./client": "./lib/client.js",
@@ -21,6 +27,7 @@
     "scripts/switch.mjs",
     "scripts/selftest.mjs",
     "scripts/switchtest.mjs",
+    "scripts/clienttest.mjs",
     "scripts/use-managed-dsh.mjs",
     "scripts/restart-web.sh",
     "scripts/build-demo.mjs",

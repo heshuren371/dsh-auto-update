@@ -70,10 +70,19 @@ function setStatus(patch) {
   writeJsonAtomic(STATUS_FILE, status)
   appendLog(`phase=${status.phase} ${status.message ?? ''}${status.error !== null ? ' error=' + status.error : ''}`)
 }
+/**
+ * 读取「从 fromOffset 起」的日志尾部（最多 cap 字节）。
+ *
+ * 偏移量和 fileSize() 一样按**字节**算：日志里全是中文（switch.mjs 自己写的状态行
+ * 就是中文），字节数 > UTF-16 字符数。早先把字节偏移直接喂给 text.slice()，切片
+ * 起点会越过后来的 token URL —— 回滚路径必然超时，成功路径也只是碰巧过关。
+ * 这里按 Buffer 切，两端语义一致；subarray 切在半截多字节处时 toString 会补 U+FFFD，
+ * 不影响后面的正则匹配。
+ */
 function readFileTail(file, fromOffset, cap = 512 * 1024) {
   try {
-    const text = readFileSync(file, 'utf8')
-    return text.slice(Math.max(fromOffset, text.length - cap))
+    const buffer = readFileSync(file)
+    return buffer.subarray(Math.max(fromOffset, buffer.length - cap)).toString('utf8')
   } catch {
     return ''
   }
