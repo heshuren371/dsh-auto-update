@@ -98,6 +98,13 @@ writeJsonAtomic(path.join(tmp, 'x.json'), { a: 1 })
 equal('writeJsonAtomic/readJson 往返', readJson(path.join(tmp, 'x.json')), { a: 1 })
 rmSync(tmp, { recursive: true, force: true })
 
+// -- 客户端不能遮蔽模块级 runtime（否则 useEffect 里的 runtime.schedulePolling 会崩）
+const clientSource = readFileSync(new URL('../lib/client.js', import.meta.url), 'utf8')
+const shadowed = /(?:const|let|var)\s+runtime\s*=/.test(
+  clientSource.replace('let runtime = null', ''),
+)
+check('client 不遮蔽模块级 runtime', shadowed === false)
+
 // -- 空闲端口
 const port = await findFreePort()
 check('findFreePort 返回合法端口', Number.isInteger(port) && port > 0 && port < 65536, String(port))

@@ -121,6 +121,18 @@ cd ~/.dsh/profiles/web && pnpm install
 **更新失败**：正在运行的服务没有被改动，直接看设置行的日志。副本可能不完整，
 下次更新会重建。
 
+**报退出码 69 / "not agreed to the Xcode license agreements"**：
+macOS 的 `/usr/bin/git` 是 Xcode 的 shim，Xcode 许可没接受时它会直接以 69 退出。
+插件会自动改用 CommandLineTools / Xcode 自带的真实 git（启动日志里有一行 `git：<路径>`），
+但你的终端 `git` 仍然会报错；而且**原生模块构建（`build:native-system` → `xcrun`/clang）
+受同一许可影响**，只装 Homebrew git 并不能修复构建。推荐直接接受许可：
+
+```sh
+sudo xcodebuild -license accept     # 接受 Xcode 许可（会要求输入密码）
+```
+
+插件在点「立即更新」前会预检 `xcrun`：许可没接受时会直接提示，而不是白等两分钟构建失败。
+
 **重启后页面打不开**：
 ```sh
 cat ~/.dsh/dsh-auto-update/switch-status.json   # 切换器最后的状态

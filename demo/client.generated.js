@@ -319,14 +319,16 @@
       })();
 
       // 运行指针 / 插件禁用 / 切换结果：字段都当作不可信输入处理，缺了就少显示。
-      const runtime = state !== null && typeof state.runtime === "object" && state.runtime !== null ? state.runtime : null;
+      // 注意：变量名不能叫 runtime —— 那会遮住模块级的客户端运行时对象
+      // （runtime.schedulePolling / runtime.mountStyles），"立即更新"时直接渲染崩溃。
+      const runtimeInfo = state !== null && typeof state.runtime === "object" && state.runtime !== null ? state.runtime : null;
       const quarantined = state !== null && Array.isArray(state.quarantined) ? state.quarantined : [];
       const switchInfo = state !== null && typeof state.switch === "object" && state.switch !== null ? state.switch : null;
       // 可切换：有已试运行通过的候选，且当前入口不是它。
       // 首次迁移时 matchesActive 是 null（还没有 active），所以判断条件是 !== true。
-      const runtimeSwitchable = runtime !== null && (runtime.canSwitch === true
-        || (runtime.matchesActive !== true && (runtime.active !== null || runtime.candidateCanaryOk === true)));
-      const runtimeMismatch = runtime !== null && runtime.matchesActive === false;
+      const runtimeSwitchable = runtimeInfo !== null && (runtimeInfo.canSwitch === true
+        || (runtimeInfo.matchesActive !== true && (runtimeInfo.active !== null || runtimeInfo.candidateCanaryOk === true)));
+      const runtimeMismatch = runtimeInfo !== null && runtimeInfo.matchesActive === false;
       const restartReady = !busy && (finished || runtimeSwitchable);
       const switchError = switchInfo !== null && typeof switchInfo.error === "string" && switchInfo.error.length > 0
         ? switchInfo.error : "?";

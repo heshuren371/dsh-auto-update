@@ -1,6 +1,6 @@
 {
   "name": "@local/dsh-auto-update",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "description": "在「设置 → 通用」里一键检测并更新 DeepSeek Harness：在蓝绿副本里构建、用真实 profile 试运行、通过后由独立切换器安全重启，失败自动回滚。",
   "license": "MIT",

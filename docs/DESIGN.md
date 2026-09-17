@@ -48,7 +48,7 @@
 
 | 文件 | 职责 |
 | --- | --- |
-| `lib/util.js` | shell 转义、进程组回收、行缓冲、原子写文件（单测可直接 import） |
+| `lib/util.js` | shell 转义、进程组回收、行缓冲、原子写文件；**可用 git 解析**（Xcode 许可拦住 `/usr/bin/git` 时自动改用 CLT/Xcode 自带 git，见下） |
 | `lib/probe.js` | 空闲端口、候选入口试运行、loader 冲突解析、禁用 patch 生成 |
 | `scripts/switch.mjs` | 独立切换器：摘掉托管旧服务的 launchd 作业（keepalive 会把旧进程拉回来）→ 等旧进程退出 → 清端口残留 → 起新版本 → 校验 → 失败回滚 |
 | `scripts/selftest.mjs` | 纯函数单测；`--integration` 额外做一次真实 profile 试运行 |
@@ -64,6 +64,21 @@
 - `$DSH_HOME/dsh-auto-update/switch-status.json`：切换器的状态机
   （`starting` → `ready` / `rolling-back` / `failed`），界面直接展示。
 - `$DSH_HOME/dsh-auto-update/switch.log`：新旧进程的启动日志。
+
+### git 不可用时的降级（Xcode 许可，退出码 69）
+
+macOS 的 `/usr/bin/git` 是 shim：Xcode 许可没接受时它直接以 69 退出并打印
+"not agreed to the Xcode license agreements"，Homebrew git 也可能没装。
+`lib/util.js` 的 `resolveGitBin()` 会按 PATH → Homebrew → CommandLineTools → Xcode
+的顺序逐个跑 `git --version`，谁真的能跑就用谁，并把它所在目录放到所有子进程
+PATH 的最前面（pnpm 里的 git 调用一并受益）。worktree 回溯主仓库优先解析
+`.git` 文件（`gitdir:`），不依赖 git 可用。fetch/install/build 失败时把 stderr
+里最有信息量的一行（含 error/fatal/license 优先）写进错误信息，界面直接看到真实
+原因而不是笼统的"网络或权限"。
+
+同一许可还会拦住 `xcrun`/clang：`build:native-system` 必然失败。因此
+`startUpdate` 在动手前跑 `xcrun -f clang` 预检，许可未接受时直接拒绝并提示
+`sudo xcodebuild -license accept`，不让用户等两分钟构建再看到同一个错误。
 
 ### 已知限制
 
