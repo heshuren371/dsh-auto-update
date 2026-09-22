@@ -118,8 +118,23 @@ cd ~/.dsh/profiles/web && pnpm install
 
 ## 故障排查
 
-**更新失败**：正在运行的服务没有被改动，直接看设置行的日志。副本可能不完整，
-下次更新会重建。
+**更新失败**：正在运行的服务没有被改动。v0.4 起插件会写一份**结构化失败报告**
+（分类 + 复现命令 + 日志尾部 + 可直接粘贴的 agent 提示词），并给你三条修复路径：
+
+- 设置行里点 **复制诊断报告** → 把提示词粘给任意 AI 代理接手；
+- 设置行里点 **让 dsh 帮忙修复** → 用 `headless` profile 起一个后台 dsh 会话读报告尝试修复，
+  日志在 `~/.dsh/dsh-auto-update/failures/assist-<时间>.log`；
+- 命令行：`node scripts/repair.mjs`（摘要）/ `--prompt` / `--json` / `--clear` /
+  `--assist [--profile headless]`。
+
+失败报告与日志：`~/.dsh/dsh-auto-update/failures/latest.json`、`latest.log`；
+流水线全程日志：`~/.dsh/dsh-auto-update/pipeline.log`。
+
+**为什么会「构建失败」**：v0.4 起每次更新都会**新建一个全新 worktree**
+（`slots/<sha7>-<时间戳>`）并重新 `pnpm install`。此前复用旧槽位时，旧版本残留的
+编译产物（`MISSING_EXPORT`）和旧 `node_modules` 工作区状态（`Cannot find entry`）
+都曾把新版本构建搞挂；全新副本从构造上消除这两类问题。旧副本会自动清理，
+只保留正在运行的、刚构建的、以及最近失败的副本。
 
 **报退出码 69 / "not agreed to the Xcode license agreements"**：
 macOS 的 `/usr/bin/git` 是 Xcode 的 shim，Xcode 许可没接受时它会直接以 69 退出。
@@ -169,10 +184,11 @@ node --check lib/client.js         # 客户端半
 node --check lib/probe.js
 node --check lib/util.js
 node --check scripts/switch.mjs
-node scripts/selftest.mjs          # 纯函数单测
+node scripts/selftest.mjs          # 纯函数/失败分类单测
 DSH_UPDATE_ENTRY=~/deepseek-harness/apps/cli/lib/bin.js \
   node scripts/selftest.mjs --integration   # 真实 profile 试运行（不碰 3080）
-node scripts/selftest.mjs --pipeline        # 全流水线：副本构建+试运行（临时状态目录）
+node scripts/selftest.mjs --pipeline        # 全流水线：全新副本构建+试运行（临时状态目录）
+node scripts/repair.mjs --prompt            # 最近一次失败交给 agent 的提示词
 node scripts/switchtest.mjs        # 切换器：外部进程安全 + 成功 + 回滚（空闲端口，不碰 3080）
 node scripts/build-demo.mjs        # 生成 demo/ 下的动态插件预览代码
 ```

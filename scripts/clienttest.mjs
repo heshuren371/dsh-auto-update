@@ -14,8 +14,10 @@
  *      useEffect 在渲染后按顺序执行一次，useRef 返回稳定对象；
  *   3. ctx stub：effect / slots / locale，locale.bind 带 {占位符} 插值（与宿主行为一致）；
  *   4. 对若干宿主状态各渲染一次并执行 effect，断言不抛错、关键文案与按钮出现；
- *      另有三组特殊用例：点「立即更新」进入 updating 的完整回归、
- *      迟到的 /state 响应不得覆盖 POST 状态的竞态、错误边界兜底。
+ *      另有六组特殊用例：点「立即更新」进入 updating 的完整回归、
+ *      迟到的 /state 响应不得覆盖 POST 状态的竞态、错误边界兜底、
+ *      复制诊断报告（agentPrompt 与整包 JSON 退化）、
+ *      剪贴板被拒时退回 execCommand、让 dsh 帮忙修复的两次确认。
  *
  * 全程不联网、不起进程、不碰 ~/.dsh 状态目录（也不读它）。
  * 用法：node scripts/clienttest.mjs
@@ -59,10 +61,43 @@ process.on('unhandledRejection', (error) => { rejections.push(error) })
 /* ---------- 浏览器环境 stub ---------- */
 
 const styleTags = []
+// createElement 既服务 runtime.mountStyles 的 <style>，也服务剪贴板兜底的 <textarea>；
+// createdElements 记录所有创建过的元素，用来断言 execCommand 兜底拿到了哪段文本。
+const createdElements = []
 globalThis.document = {
-  createElement: () => ({ dataset: {}, textContent: '', remove() {} }),
+  createElement: (tagName) => {
+    const element = {
+      tagName,
+      dataset: {},
+      style: {},
+      textContent: '',
+      value: '',
+      setAttribute() {},
+      select() {},
+      remove() {},
+    }
+    createdElements.push(element)
+    return element
+  },
   head: { appendChild: (tag) => { styleTags.push(tag) } },
+  body: { appendChild: () => {}, removeChild: () => {} },
+  execCommand: () => false,
 }
+
+// Node 24 的 navigator 是不可直接赋值的全局属性，用 defineProperty 换成可控 stub；
+// clipboard.ok=false 模拟权限被拒，用来验证 execCommand 兜底路径。
+const clipboard = { text: null, ok: true }
+Object.defineProperty(globalThis, 'navigator', {
+  configurable: true,
+  value: {
+    clipboard: {
+      writeText: async (text) => {
+        if (clipboard.ok !== true) throw new Error('clipboard denied')
+        clipboard.text = text
+      },
+    },
+  },
+})
 // 用假定时器：既避免进程被真实 interval 拖住，也能确认轮询真的被调度了。
 // lastTick 保存最后一次轮询回调，竞态用例用它手动触发一次真实轮询。
 const timers = { scheduled: 0, cleared: 0, lastTick: null }
@@ -288,7 +323,43 @@ function hostState(overrides) {
   }, overrides)
 }
 
-/** 组件的 useState 调用顺序：state / log / failed / showLog / armed / restartNote / pending。 */
+/** publicState.failure 的摘要形状（只有标量，界面只用 hint）。 */
+function failureInfo(overrides) {
+  return Object.assign({
+    at: '2025-09-17T10:00:00Z',
+    kind: 'stale-build-artifacts',
+    hint: '旧构建产物残留导致构建失败，需要清理后重试',
+    step: 'build',
+    error: 'MISSING_EXPORT: SettingsProvider',
+    logPath: '/Users/x/.dsh/dsh-auto-update/failures/latest.log',
+  }, overrides)
+}
+
+/** GET /api/failure 返回的完整 FailureBundle。 */
+function failureBundle(overrides) {
+  return Object.assign({
+    at: '2025-09-17T10:00:00Z',
+    kind: 'stale-build-artifacts',
+    hint: '旧构建产物残留导致构建失败，需要清理后重试',
+    step: 'build',
+    error: 'MISSING_EXPORT: SettingsProvider',
+    repo: '/Users/x/dsh',
+    slot: 'b',
+    target: { ref: 'master', sha: SHA_B, version: '0.4.0', channel: 'master' },
+    running: { version: '0.3.0', commit: SHA_A, root: '/Users/x/dsh' },
+    env: { node: 'v24.18.0', pnpm: '10.0.0', platform: 'darwin', arch: 'arm64', git: 'git version 2.39.5' },
+    reproduce: ['cd /Users/x/dsh', 'pnpm install', 'pnpm run build'],
+    logTail: ['MISSING_EXPORT: SettingsProvider'],
+    logPath: '/Users/x/.dsh/dsh-auto-update/failures/latest.log',
+    attempts: [],
+    agentPrompt: '# 修复任务\n清理旧构建产物后重新构建。',
+  }, overrides)
+}
+
+/**
+ * 组件的 useState 调用顺序：state / log / failed / showLog / armed / restartNote / pending。
+ * 复制与 AI 修复新增的 useState 排在 useRef 之后、默认取初始值，前 7 项保持不变。
+ */
 function queueFor(state, overrides) {
   const base = [state, Array.isArray(state?.log) ? state.log : [], null, false, false, null, null]
   if (overrides !== undefined) Object.assign(base, overrides)
@@ -299,13 +370,21 @@ function queueFor(state, overrides) {
 
 let routes = {}
 let fetchCalls = []
+// 记录方法/头，供「变更类接口必须带守卫头」的断言使用。
+let fetchRequests = []
 function routeKey(url) {
   const pathOnly = String(url).split('?')[0]
   return pathOnly.slice(pathOnly.lastIndexOf('/') + 1)
 }
-globalThis.fetch = async (url) => {
+globalThis.fetch = async (url, options) => {
   const key = routeKey(url)
   fetchCalls.push(String(url))
+  fetchRequests.push({
+    url: String(url),
+    key,
+    method: options !== null && options !== undefined && typeof options.method === 'string' ? options.method : 'GET',
+    headers: options !== null && options !== undefined && options.headers !== undefined ? options.headers : null,
+  })
   const route = Object.prototype.hasOwnProperty.call(routes, key) ? routes[key] : { ok: true }
   // 路由值可以是函数，函数也可以返回 Promise：竞态用例靠它把某个响应挂起，
   // 手动决定它和 POST 响应的到达顺序。
@@ -440,10 +519,47 @@ const scenarios = [
     buttons: { '重启生效': false },
   },
   {
-    name: 'canary 失败 phase=error',
+    name: 'canary 失败 phase=error（无失败包时不出现新按钮）',
     state: hostState({ phase: 'error', step: 'canary', error: '试运行未通过：候选进程起不来' }),
     expect: ['试运行未通过：候选进程起不来'],
-    absent: ['已是最新版本', '正在更新'],
+    absent: ['已是最新版本', '正在更新', '复制诊断报告', '让 dsh 帮忙修复', 'dsh 修复会话'],
+  },
+  {
+    name: 'phase=error 且有失败包（AI 修复入口）',
+    state: hostState({
+      phase: 'error',
+      step: 'build',
+      error: '构建失败',
+      failure: failureInfo(),
+    }),
+    expect: [
+      '构建失败',
+      '旧构建产物残留导致构建失败，需要清理后重试',
+      '复制诊断报告',
+      '让 dsh 帮忙修复',
+    ],
+    buttons: { '复制诊断报告': false, '让 dsh 帮忙修复': false },
+  },
+  {
+    name: 'assist.running 时显示修复会话运行中',
+    state: hostState({
+      phase: 'error',
+      step: 'build',
+      error: '构建失败',
+      failure: failureInfo(),
+      assist: {
+        running: true,
+        pid: 4242,
+        logPath: '/Users/x/.dsh/dsh-auto-update/assist/latest.log',
+        startedAt: '2025-09-17T10:01:00Z',
+        error: null,
+      },
+    }),
+    expect: [
+      'dsh 修复会话运行中（pid 4242）',
+      '日志：/Users/x/.dsh/dsh-auto-update/assist/latest.log',
+    ],
+    buttons: { '让 dsh 帮忙修复': true },
   },
   {
     name: 'runtime.canSwitch=true（闲置态也可重启）',
@@ -641,6 +757,144 @@ process.stdout.write('\n== 场景：渲染崩溃时错误边界给出可见文�
   check('错误边界捕获渲染异常', result.boundary === true)
   check('错误边界输出可见文案', result.text.includes('界面渲染出错了：') && result.text.includes('boom: 候选校验爆炸'), preview(result.text))
   check('错误边界不返回白屏', result.text.trim().length > 0)
+}
+
+/* ---------- 回归：复制诊断报告 ---------- */
+
+process.stdout.write('\n== 场景：复制诊断报告（agentPrompt 与 JSON 退化）==\n')
+{
+  const prompt = '# 修复任务\n请清理旧构建产物后重新构建。'
+  const failedState = hostState({
+    phase: 'error',
+    step: 'build',
+    error: '构建失败',
+    failure: failureInfo(),
+  })
+
+  startScenario(queueFor(failedState))
+  routes = { state: failedState, failure: { ok: true, failure: failureBundle({ agentPrompt: prompt }) } }
+  fetchCalls = []
+  fetchRequests = []
+  clipboard.text = null
+  clipboard.ok = true
+  const first = renderRoot()
+  const firstEffects = runEffects()
+  check('失败态渲染与 effect 不抛错', first.errors.length === 0 && firstEffects.length === 0,
+    first.errors.concat(firstEffects).map(formatError).join(' | '))
+  const copyButton = findButton('复制诊断报告')
+  check('「复制诊断报告」按钮存在且可点', copyButton !== undefined && copyButton.disabled === false)
+  copyButton?.onClick()
+  await settle()
+  const failureRequest = fetchRequests.filter((request) => request.key === 'failure').pop()
+  check('GET /api/failure 已发出且是 GET', failureRequest !== undefined && failureRequest.method === 'GET',
+    JSON.stringify(failureRequest ?? null))
+  check('剪贴板收到 agentPrompt', clipboard.text === prompt, preview(clipboard.text))
+  expectText(renderRoot().text, '已复制，可粘贴给任意 AI 代理修复')
+
+  // 失败包没有 agentPrompt（或老版本宿主）时退化为整包 JSON，仍能交给代理。
+  startScenario(queueFor(failedState))
+  routes = { state: failedState, failure: { ok: true, failure: failureBundle({ agentPrompt: undefined }) } }
+  fetchCalls = []
+  clipboard.text = null
+  const second = renderRoot()
+  check('退化用例渲染不抛错', second.errors.length === 0, second.errors.map(formatError).join(' | '))
+  findButton('复制诊断报告')?.onClick()
+  await settle()
+  let parsed = null
+  try { parsed = JSON.parse(clipboard.text) } catch { parsed = null }
+  check(
+    '无 agentPrompt 时剪贴板收到整包 JSON',
+    parsed !== null && parsed.kind === 'stale-build-artifacts' && parsed.error === 'MISSING_EXPORT: SettingsProvider',
+    preview(clipboard.text),
+  )
+}
+
+/* ---------- 回归：剪贴板被拒时退回 execCommand ---------- */
+
+process.stdout.write('\n== 场景：navigator.clipboard 被拒时退回 execCommand ==\n')
+{
+  const prompt = '# 修复任务\n兜底路径'
+  const failedState = hostState({
+    phase: 'error',
+    step: 'build',
+    error: '构建失败',
+    failure: failureInfo(),
+  })
+  clipboard.ok = false
+  let execText = null
+  document.execCommand = (command) => {
+    if (command !== 'copy') return false
+    const areas = createdElements.filter((element) => element.tagName === 'textarea')
+    execText = areas.length > 0 ? areas[areas.length - 1].value : null
+    return true
+  }
+  startScenario(queueFor(failedState))
+  routes = { state: failedState, failure: { ok: true, failure: failureBundle({ agentPrompt: prompt }) } }
+  clipboard.text = null
+  const result = renderRoot()
+  check('渲染不抛错', result.errors.length === 0, result.errors.map(formatError).join(' | '))
+  findButton('复制诊断报告')?.onClick()
+  await settle()
+  check('execCommand 兜底拿到 agentPrompt', execText === prompt, preview(execText))
+  expectText(renderRoot().text, '已复制，可粘贴给任意 AI 代理修复')
+  clipboard.ok = true
+  document.execCommand = () => false
+}
+
+/* ---------- 回归：让 dsh 帮忙修复 ---------- */
+
+process.stdout.write('\n== 场景：让 dsh 帮忙修复（两次确认）==\n')
+{
+  const assistLog = '/Users/x/.dsh/dsh-auto-update/assist/latest.log'
+  const failedState = hostState({
+    phase: 'error',
+    step: 'build',
+    error: '构建失败',
+    failure: failureInfo(),
+  })
+
+  startScenario(queueFor(failedState))
+  routes = {
+    state: failedState,
+    assist: { ok: true, pid: 4321, logPath: assistLog, profile: 'default' },
+  }
+  fetchCalls = []
+  fetchRequests = []
+  const first = renderRoot()
+  const firstEffects = runEffects()
+  check('失败态渲染与 effect 不抛错', first.errors.length === 0 && firstEffects.length === 0,
+    first.errors.concat(firstEffects).map(formatError).join(' | '))
+  const assistButton = findButton('让 dsh 帮忙修复')
+  check('「让 dsh 帮忙修复」按钮存在且可点', assistButton !== undefined && assistButton.disabled === false)
+  assistButton?.onClick()
+  await settle()
+  check('第一次点击只进入确认态、不发请求', !fetchCalls.some((url) => routeKey(url) === 'assist'), fetchCalls.join(', '))
+  renderRoot()
+  const armedButton = findButton('确认让 dsh 修复？')
+  check('出现二次确认按钮', armedButton !== undefined, world.buttons.map((b) => b.label).join(' / '))
+  armedButton?.onClick()
+  await settle()
+  const assistRequest = fetchRequests.filter((request) => request.key === 'assist').pop()
+  check(
+    'POST /api/assist 已发出且带 JSON content-type 与 x-dsh-updater 头',
+    assistRequest !== undefined && assistRequest.method === 'POST'
+      && assistRequest.headers !== null && assistRequest.headers['content-type'] === 'application/json'
+      && assistRequest.headers['x-dsh-updater'] === '1',
+    JSON.stringify(assistRequest ?? null),
+  )
+  expectText(renderRoot().text, 'dsh 修复会话已启动：日志 ' + assistLog)
+
+  // 宿主失败时原样显示具体原因，不吞成「连不上」。
+  startScenario(queueFor(failedState))
+  routes = { state: failedState, assist: { ok: false, error: '已有修复会话在运行' } }
+  fetchCalls = []
+  renderRoot()
+  findButton('让 dsh 帮忙修复')?.onClick()
+  await settle()
+  renderRoot()
+  findButton('确认让 dsh 修复？')?.onClick()
+  await settle()
+  expectText(renderRoot().text, '出错了：已有修复会话在运行')
 }
 
 /* ---------- 字典一致性 ---------- */

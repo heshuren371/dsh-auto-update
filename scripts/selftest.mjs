@@ -13,7 +13,7 @@
  * 但绝不接触 3080 上的正在运行的服务。
  */
 import { execFileSync, spawnSync } from 'node:child_process'
-import { accessSync, constants, existsSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { accessSync, constants, existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import { canaryBoot } from '../lib/probe.js'
@@ -210,6 +210,42 @@ const shadowed = /(?:const|let|var)\s+runtime\s*=/.test(
 )
 check('client 不遮蔽模块级 runtime', shadowed === false)
 
+// index.js 在导入时冻结 STATE_DIR / SLOTS_DIR，所以加载它之前必须先把状态目录隔离到
+// 临时位置，否则后面的 --pipeline 会写到真实状态目录（曾经真的写进去过）。
+const implicitStateDir = process.env.DSH_UPDATE_STATE === undefined || process.env.DSH_UPDATE_STATE.length === 0
+const isolatedStateDir = implicitStateDir
+  ? mkdtempSync(path.join(os.tmpdir(), 'dsh-update-state-'))
+  : process.env.DSH_UPDATE_STATE
+process.env.DSH_UPDATE_STATE = isolatedStateDir
+
+// -- 失败分类与 agent 修复提示词（v0.4：失败要能直接交给模型/agent）
+const { __testing } = await import('../lib/index.js')
+equal(
+  'MISSING_EXPORT 归为 stale-build-artifacts',
+  __testing.classifyFailure('ERROR Error: Build failed with 1 error: [MISSING_EXPORT] "SettingsProvider" is not exported').kind,
+  'stale-build-artifacts',
+)
+equal(
+  'Cannot find entry 归为 stale-build-artifacts',
+  __testing.classifyFailure('[@deepseek-ai/dsh-root] Cannot find entry: ["lib/types/{index,invariant,startup}.js"]').kind,
+  'stale-build-artifacts',
+)
+equal('SSL 失败归为 network', __testing.classifyFailure('fatal: unable to access: LibreSSL SSL_connect: SSL_ERROR_SYSCALL').kind, 'network')
+equal('Xcode 许可归为 toolchain', __testing.classifyFailure('You have not agreed to the Xcode license agreements').kind, 'toolchain')
+equal('loader entry 归为 plugin-conflict', __testing.classifyFailure('failed to apply loader entry music-player (@local/dsh-music-player): x').kind, 'plugin-conflict')
+equal('未分类文本归为 unknown', __testing.classifyFailure('something completely different').kind, 'unknown')
+const agentPrompt = __testing.buildAgentPrompt({
+  kind: 'network', hint: '检查网络', step: 'fetch', error: 'fetch 失败', repo: '/repo', slot: '/slot',
+  target: { ref: 'origin/master', sha: 'abc123', version: '1.0.0', channel: 'master' },
+  running: { version: '0.9.0', root: '/active' },
+  env: { node: 'v24.0.0', platform: 'darwin', arch: 'arm64', git: '/usr/bin/git' },
+  reproduce: ['cd /slot', 'pnpm install', 'pnpm run build'],
+  logTail: ['line-1', 'line-2'], logPath: '/logs/latest.log',
+})
+check('agentPrompt 含复现命令与目标信息', agentPrompt.includes('cd /slot') && agentPrompt.includes('origin/master') && agentPrompt.includes('abc123'))
+check('agentPrompt 含安全约束', agentPrompt.includes('不要重启') && agentPrompt.includes('3080'))
+check('agentPrompt 含日志尾部', agentPrompt.includes('line-2') && agentPrompt.includes('/logs/latest.log'))
+
 // -- 空闲端口
 const port = await findFreePort()
 check('findFreePort 返回合法端口', Number.isInteger(port) && port > 0 && port < 65536, String(port))
@@ -252,11 +288,8 @@ if (process.argv.includes('--integration')) {
 if (process.argv.includes('--pipeline')) {
   process.stdout.write('\n== 全流水线：副本构建 + 试运行（隔离状态目录）==\n')
   const keep = process.argv.includes('--keep')
-  const implicitState = process.env.DSH_UPDATE_STATE === undefined || process.env.DSH_UPDATE_STATE.length === 0
-  const stateDir = implicitState
-    ? mkdtempSync(path.join(os.tmpdir(), 'dsh-update-state-'))
-    : process.env.DSH_UPDATE_STATE
-  process.env.DSH_UPDATE_STATE = stateDir
+  // 复用上面已经隔离好的状态目录（index.js 已按它冻结路径）。
+  const stateDir = process.env.DSH_UPDATE_STATE
   if (process.env.DSH_UPDATE_REPO === undefined || process.env.DSH_UPDATE_REPO.length === 0) {
     process.env.DSH_UPDATE_REPO = path.join(os.homedir(), 'deepseek-harness')
   }
@@ -308,9 +341,11 @@ if (process.argv.includes('--pipeline')) {
   }
 
   if (!keep) {
-    for (const name of ['a', 'b']) {
-      const slot = path.join(stateDir, 'slots', name)
-      if (existsSync(slot)) {
+    // v0.4 起副本目录名是 <sha7>-<时间戳>，逐个摘掉注册再删状态目录。
+    const slotsDir = path.join(stateDir, 'slots')
+    if (existsSync(slotsDir)) {
+      for (const name of readdirSync(slotsDir)) {
+        const slot = path.join(slotsDir, name)
         try { execFileSync('git', ['-C', process.env.DSH_UPDATE_REPO, 'worktree', 'remove', '--force', slot], { stdio: 'ignore' }) } catch { /* 清不掉就 prune */ }
       }
     }
@@ -322,4 +357,8 @@ if (process.argv.includes('--pipeline')) {
 }
 
 process.stdout.write(`\n== 最终：${passed} 通过，${failed} 失败 ==\n`)
+// 非 --pipeline 路径也要清掉临时状态目录（--pipeline 已清过，force 幂等）。
+if (implicitStateDir && !process.argv.includes('--keep')) {
+  rmSync(isolatedStateDir, { recursive: true, force: true })
+}
 process.exit(failed === 0 ? 0 : 1)

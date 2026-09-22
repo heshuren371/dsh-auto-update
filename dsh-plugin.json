@@ -2,7 +2,7 @@
   "manifestVersion": "0.15",
   "id": "local.dsh-auto-update",
   "name": "DSH 自动更新（Auto Update）",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "facets": {
     "host": {
       "entry": "lib/index.js",
@@ -26,8 +26,8 @@
   "permissions": [
     {
       "name": "shell.exec",
-      "scope": "git / pnpm 命令，工作目录为 harness 主仓库及其 $DSH_HOME/dsh-auto-update/slots 试运行副本（主仓库自动探测，可用 DSH_UPDATE_REPO 覆盖）",
-      "reason": "检测上游更新，在独立副本里执行 git checkout + pnpm install + pnpm run build，并用 --version 预检候选入口"
+      "scope": "git / pnpm 命令，工作目录为 harness 主仓库及其 $DSH_HOME/dsh-auto-update/slots 下的全新试运行副本（主仓库自动探测，可用 DSH_UPDATE_REPO 覆盖）",
+      "reason": "检测上游更新，为每次更新新建 worktree 并执行 pnpm install + pnpm run build，用 --version 预检候选入口"
     },
     {
       "name": "fs.write",
@@ -41,8 +41,8 @@
     },
     {
       "name": "process.control",
-      "scope": "dsh web 自身进程；端口上已确认属于 dsh web 的残留进程",
-      "reason": "仅在用户点「重启生效」时，由独立切换器清掉旧进程并按「先启动校验、失败回滚」的顺序完成切换"
+      "scope": "dsh web 自身进程；端口上已确认属于 dsh web 的残留进程；仅在用户点「让 dsh 帮忙修复」时启动的 headless dsh 修复会话",
+      "reason": "「重启生效」由独立切换器按「先启动校验、失败回滚」完成切换；「让 dsh 帮忙修复」按用户点击启动一个后台 dsh 会话读取失败报告，日志写到 $DSH_HOME/dsh-auto-update/failures/"
     }
   ],
   "contributes": {
@@ -83,7 +83,10 @@
             "POST /api/update",
             "POST /api/cancel",
             "POST /api/restart",
-            "POST /api/plugins/retry"
+            "POST /api/plugins/retry",
+            "GET /api/failure",
+            "POST /api/failure/clear",
+            "POST /api/assist"
           ]
         }
       }

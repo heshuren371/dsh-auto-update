@@ -275,6 +275,15 @@ function apply(ctx) {
     return payload(0)
   }), 'auto-update demo: retryPlugins')
 
+  // 演示版没有真实失败报告：返回空报告，客户端会走"没有失败记录"的降级路径。
+  ctx.effect(() => harness.handle('failure', async () => {
+    return { ok: true, failure: null }
+  }), 'auto-update demo: failure')
+
+  ctx.effect(() => harness.handle('assist', async () => {
+    return { ok: false, error: '演示版不执行自动修复；正式插件会用 headless profile 起一个 dsh 会话读取失败报告' }
+  }), 'auto-update demo: assist')
+
   push('插件已加载（演示版），仓库：' + REPO)
   push('点击「检查更新」即可比对上游提交。')
 }

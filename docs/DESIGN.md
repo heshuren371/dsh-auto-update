@@ -28,7 +28,7 @@
 | --- | --- | --- |
 | snapshot | 记录主仓库 HEAD 到 `dsh-rollback` | 中止，不碰服务 |
 | fetch | `git fetch --prune origin`，解析目标提交（默认分支 upstream，`DSH_UPDATE_CHANNEL=tag` 时用最新 `dsh-v*` 标签） | 中止 |
-| stage | 在**非 active** 的插槽里 `git worktree` checkout 目标提交 | 中止 |
+| stage | **新建一个全新 worktree**（`slots/<sha7>-<时间戳>`），不复用旧槽位 | 中止 |
 | install | 在副本里 `pnpm install` | 中止，主仓库/服务不动 |
 | build | 在副本里 `pnpm run build` | 中止 |
 | canary | 空闲端口 + 真实 profile 起候选入口，解析 token URL、HTTP 校验 | 报错；若失败信息指向第三方 loader entry，生成 `quarantine.yml` 禁用该条后重试（≤8 个） |
@@ -57,6 +57,21 @@
 | 切换器 | `readFileTail` 把字节偏移当字符下标；中文日志下切片起点越过 token URL → 回滚被误判 `failed`（服务其实已恢复） | 改 `readFileSync` Buffer + `subarray` 按字节切；回滚 status 从 `failed` 变为 `ready/rolledBack=true` |
 | 客户端 | 迟到的 `/state` 响应可能把刚点「立即更新」的 `updating` 覆盖回 `idle` | 请求代次 `requestGenRef`：`act()` 发 POST 前自增作废在途 GET，`pull()` 代次变化则丢弃响应 |
 
+### v0.4：更新架构修复 + 失败可交付 agent
+
+**背景**：0.1.7-alpha.1 更新在复用旧槽位时连续踩两个坑 ——
+旧 `lib/types` 残留导致 `MISSING_EXPORT "SettingsProvider"`；清掉产物再复用旧
+`node_modules` 后又报 `[@deepseek-ai/dsh-root] Cannot find entry`。
+在**全新 worktree** 上 `pnpm install && pnpm run build` 一次通过（install 5.2s，build 正常）。
+
+| 变化 | 说明 |
+| --- | --- |
+| 全新副本策略 | 每次更新 `git worktree add` 一个全新目录，绝不 checkout 复用；成功后清理旧副本，只保留 active / candidate / 最近失败副本 |
+| 失败报告 | 失败时写 `failures/latest.json` + `latest.log`：分类（stale-build-artifacts / network / toolchain / port / plugin-conflict / type-error / disk / unknown）、复现命令、环境、目标与运行版本、日志尾部、`agentPrompt` |
+| 失败分类 | `classifyFailure()` 用规则表把错误+日志映射成可执行建议；分类逻辑在 `__testing` 下有单测 |
+| 交付 agent | `GET /api/failure` 取完整报告；`POST /api/assist` 用 `headless` profile 后台起一个 dsh 会话读 `agentPrompt` 尝试修复（日志写 `failures/assist-*.log`，状态进 `publicState.assist`）；`scripts/repair.mjs` 提供 CLI 同款能力 |
+| 流水线日志 | 全程落盘到 `pipeline.log`（上限 8MB），失败时截尾部进报告；界面内存环形缓冲不变 |
+
 ### 组件
 
 | 文件 | 职责 |
@@ -64,7 +79,8 @@
 | `lib/util.js` | shell 转义、进程组回收、行缓冲、有界错误行缓冲、原子写文件；**可用 git 解析**（Xcode 许可拦住 `/usr/bin/git` 时自动改用 CLT/Xcode 自带 git，见下） |
 | `lib/probe.js` | 空闲端口、候选入口试运行（可登记/回收子进程）、loader 冲突解析、禁用 patch 生成 |
 | `scripts/switch.mjs` | 独立切换器：摘掉托管旧服务的 launchd 作业（keepalive 会把旧进程拉回来）→ 等旧进程退出 → 清端口残留 → 起新版本 → 校验 → 失败回滚 |
-| `scripts/selftest.mjs` | 纯函数/边界单测（84 项）；`--integration` 真实 profile 试运行；`--pipeline` 全流水线 |
+| `scripts/selftest.mjs` | 纯函数/边界/失败分类单测（93 项）；`--integration` 真实 profile 试运行；`--pipeline` 全流水线 |
+| `scripts/repair.mjs` | 失败报告 CLI：摘要 / `--prompt` / `--json` / `--clear` / `--assist`（可 `--dry-run`） |
 | `scripts/clienttest.mjs` | 客户端渲染回归（123 项）：React/ctx stub 驱动 `lib/client.js`，覆盖 13 种 host state、事故原路径、迟到响应竞态、错误边界、zh/en 字典一致性 |
 | `scripts/switchtest.mjs` | 切换器沙箱集成测试：外部进程安全（绝不误杀）+ 成功路径 + 回滚路径，全程空闲端口 |
 | `scripts/use-managed-dsh.mjs` | 生成 `~/.local/bin/dsh` shim：终端 `dsh` 优先运行 `active-entry` 的受管版本，指针失效回退原命令；`--check` / `--remove` |
