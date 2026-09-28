@@ -128,9 +128,13 @@ function isAlive(pid) {
 function looksLikeOurServer(pid, entryHints = []) {
   const command = processCommand(pid)
   if (command.length === 0) return false
-  for (const hint of entryHints) {
-    if (typeof hint === 'string' && hint.length > 0 && command.includes(hint)) return true
+  const hints = entryHints.filter((hint) => typeof hint === 'string' && hint.length > 0)
+  for (const hint of hints) {
+    if (command.includes(hint)) return true
   }
+  // 给了明确入口提示时**只认路径匹配**：宁可拒绝清理，也绝不误杀别的 dsh 实例
+  //（曾经因为「任何 dsh web 都算自己人」误杀了不属于本次切换的服务）。
+  if (hints.length > 0) return false
   const isWeb = /(^|\s)web(\s|$)/.test(command) || command.includes('--profile web')
   if (!isWeb) return false
   // npm 全局安装时命令行是 `.../bin/dsh web`（软链），路径里一般会带 dsh。
@@ -278,14 +282,25 @@ async function main() {
       process.exit(1)
     }
   }
+  // 自动重启时界面需要几秒把「正在自动重启」渲染出来；手动重启 delayMs=0。
+  if (Number.isInteger(job.delayMs) && job.delayMs > 0) {
+    setStatus({ message: `${Math.round(job.delayMs / 1000)}s 后开始切换` })
+    appendLog(`等待 ${job.delayMs}ms 后开始切换`)
+    await sleep(job.delayMs)
+  }
   appendLog(`job=${jobPath} oldPid=${job.oldPid} port=${PORT}`)
   setStatus({ message: `等待旧服务退出（pid ${job.oldPid}）` })
 
   // 0) 如果旧服务是被 launchd 作业拉起的，先摘掉作业，免得杀掉进程后 launchd
   //    （keepalive）又拉一个出来抢端口。宿主没传 label 时按 pid 反查兜底。
-  const launchdLabel = (typeof job.launchdLabel === 'string' && job.launchdLabel.length > 0)
-    ? job.launchdLabel
-    : launchdLabelForPid(job.oldPid)
+  // 只在确认作业属于旧进程时才摘：宿主传了 label 但旧进程不是自己人时宁可不动，
+  // 免得把别的守护（例如 dsh-doctor）管着的作业摘掉。
+  const ownHints = [job.prev?.entry, job.new?.entry].filter((value) => typeof value === 'string' && value.length > 0)
+  const oldCommand = processCommand(job.oldPid)
+  const oldIsOurs = ownHints.some((hint) => oldCommand.includes(hint))
+  const resolvedLabel = launchdLabelForPid(job.oldPid)
+  const hostLabel = typeof job.launchdLabel === 'string' && job.launchdLabel.length > 0 ? job.launchdLabel : null
+  const launchdLabel = hostLabel !== null && (oldIsOurs || resolvedLabel !== null) ? hostLabel : resolvedLabel
   if (launchdLabel !== null) {
     try {
       execFileSync('launchctl', ['remove', launchdLabel], { stdio: 'ignore' })

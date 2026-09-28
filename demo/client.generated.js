@@ -80,6 +80,7 @@
       "remote": "上游 {short} · {subject}",
       "runtime.mismatch": "当前入口不是受管版本；点「重启生效」切到试运行通过的副本",
       "runtime.ready": "新版本已通过试运行，点「重启生效」完成切换（失败会自动回滚）",
+      "auto.hint": "已开启「更新完自动重启」：构建并试运行通过后会自动切换，本页稍后自动重连（DSH_UPDATE_AUTO_RESTART=0 可关）",
       "runtime.managed": "受管版本 {version} · {short}",
       "quarantined": "已临时禁用 {count} 个不兼容插件：{ids}",
       "switch.rolledback": "上次切换失败，已自动回滚到旧版本：{error}",
@@ -137,6 +138,7 @@
       "remote": "upstream {short} · {subject}",
       "runtime.mismatch": "Current entry is not the managed build; click Restart to switch to the canary-tested copy",
       "runtime.ready": "New build passed the canary — click Restart to switch (auto-rollback on failure)",
+      "auto.hint": "Auto-restart after update is on: the service switches as soon as the build passes the canary, and this page reconnects automatically (set DSH_UPDATE_AUTO_RESTART=0 to disable)",
       "runtime.managed": "Managed build {version} · {short}",
       "quarantined": "{count} incompatible plugin(s) temporarily disabled: {ids}",
       "switch.rolledback": "Previous switch failed and rolled back: {error}",
@@ -462,6 +464,8 @@
       // 注意：变量名不能叫 runtime —— 那会遮住模块级的客户端运行时对象
       // （runtime.schedulePolling / runtime.mountStyles），"立即更新"时直接渲染崩溃。
       const runtimeInfo = runtimeOf(state);
+      /** 宿主开启了「更新完自动重启」：页面会自己断开重连，提前给个提示。 */
+      const autoRestart = state !== null && state.autoRestart === true;
       const runtimeMustMigrate = mustMigrateRuntime(runtimeInfo);
       const canUpdate = snapshot !== null && snapshot.ok !== false && snapshot.isRepo !== false
         && (snapshot.updateAvailable === true || runtimeMustMigrate) && !busy;
@@ -553,6 +557,9 @@
             copyNote !== null ? h("div", { className: "dsau-hint" }, copyNote) : null,
             assistNote !== null ? h("div", { className: "dsau-hint" }, assistNote) : null,
             restartNote !== null ? h("div", { className: "dsau-hint" }, restartNote) : null,
+            autoRestart && restartNote === null
+              ? h("div", { className: "dsau-hint" }, t("auto.hint"))
+              : null,
           ),
           h("div", { className: "dsau-actions" },
             h("button", {

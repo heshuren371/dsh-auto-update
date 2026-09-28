@@ -248,10 +248,14 @@ try {
   const okJob = writeJob(okDir, {
     oldPid: old.pid,
     port: okPort,
+    // 自动重启会给界面 3s 宽限；这里用 1.2s 验证 delayMs 真的生效。
+    delayMs: 1200,
     new: { entry: NEW_ENTRY, args: ['web', '--port', String(okPort), '--no-open'], root: path.dirname(NEW_ENTRY), version: null, commit: null },
     prev: { entry: PREV_ENTRY, args: ['web', '--port', String(okPort), '--no-open'], root: null, version: null, commit: null },
   })
+  const switchStartedAt = Date.now()
   const okCode = runSwitch(okJob)
+  check('delayMs 生效（切换前先等待）', Date.now() - switchStartedAt >= 1000, 'elapsed=' + String(Date.now() - switchStartedAt))
   const okStatus = readJson(path.join(okDir, 'switch-status.json'))
   const okRuntime = readJson(path.join(okDir, 'runtime.json'))
   check('切换器退出码 0', okCode === 0, 'code=' + okCode)

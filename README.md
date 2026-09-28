@@ -1,7 +1,8 @@
 # dsh-auto-update
 
 给 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)（dsh）用的更新插件：
-在 **设置 → 通用** 里加一行「DSH 更新」，有上游提交时点一下按钮就更新完。
+在 **设置 → 通用** 里加一行「DSH 更新」，有上游提交时点一下按钮就更新完 ——
+构建通过试运行后**自动重启**，不需要再点第二次；后台还会提前把新版本构建好，让「更新」近乎即时。
 
 ![设置 → 通用 里的 DSH 更新](docs/settings-general.png)
 
@@ -11,23 +12,28 @@
 `git pull && pnpm install && pnpm run build`，再把服务一重启，很容易出现
 「新版本起不来 / 插件冲突 / 端口被残留进程占着」的三连崩。本插件按下面的顺序做事：
 
-1. **蓝绿副本构建**：更新只在 `$DSH_HOME/dsh-auto-update/slots/{a,b}` 的独立
-   git worktree 里进行。主仓库、正在运行的服务、你正在用的会话都不受影响，
-   也不再需要 stash 你的未提交改动。
+1. **全新副本构建**：每次更新都新建一个独立 git worktree（`$DSH_HOME/dsh-auto-update/slots/<sha7>-<时间戳>`）
+   并重新 `pnpm install`，绝不复用旧槽位 —— 旧构建产物和旧 `node_modules` 状态曾两次
+   把新版本构建搞挂（`MISSING_EXPORT` / `Cannot find entry`）。主仓库、正在运行的服务、
+   你正在用的会话都不受影响，也不再需要 stash 未提交改动。
 2. **真实 profile 试运行**：构建完先在**空闲端口**上用你真实的 profile 启动一次，
    解析它打印的 token 地址并做 HTTP 校验；通过才算更新成功。
 3. **插件冲突自动隔离**：试运行因某个第三方 loader entry 起不来时，自动生成
    `--patch` 覆盖层临时禁用该插件后重试（最多 8 个），而不是让整棵插件树陪葬。
    界面会列出被禁用的插件，修好后点「重新启用插件」即可恢复。
-4. **独立进程安全切换**：点「重启生效」后由 `scripts/switch.mjs` 接手：
+4. **独立进程安全切换 + 自动重启**：试运行通过后由 `scripts/switch.mjs` 接手：
    等旧进程退出 → 清理端口上确认属于 dsh web 的残留进程 → 启动新版本并等它就绪 →
    **失败就自动用旧版本回滚**。全程写 `switch-status.json`，界面能看到真实结果。
+   默认**更新完自动重启**（关掉 `DSH_UPDATE_AUTO_RESTART=0` 才需要手动点「重启生效」）。
 
 ## 功能
 
 - **检测更新**：`git fetch` 后比对「正在运行的版本」和上游，显示当前版本 / 提交 /
   分支，以及落后几个提交
 - **一键更新**：副本构建 + 试运行校验，带进度条和实时日志，关掉面板也不中断
+- **更新完自动重启**：默认开启；构建/试运行一通过就自动切换并重启（失败自动回滚）
+- **后台预构建（默认开启）**：每约 30 分钟检查一次上游，发现新提交就提前构建候选；
+  你之后点「更新」时若已有同提交候选，直接切换、不再等几分钟的构建
 - **一键安全重启**：先起后切、失败回滚，不需要你盯着终端
 - **插件隔离与恢复**：不兼容插件临时禁用，界面可见、一键重新启用
 - **运行指针**：`$DSH_HOME/dsh-auto-update/runtime.json` 记录当前运行的是哪个副本、
@@ -113,6 +119,10 @@ cd ~/.dsh/profiles/web && pnpm install
 | `DSH_UPDATE_REPO` | 显式指定 harness 主仓库路径（默认从 dsh 入口向上探测，兜底 `~/deepseek-harness`） |
 | `DSH_UPDATE_STATE` | 状态目录（默认 `$DSH_HOME/dsh-auto-update`） |
 | `DSH_UPDATE_CHANNEL` | 更新通道（命名对齐官方 Desktop 更新器）：`nightly`（默认，跟随 master 分支）/ `rc` / `alpha` / `stable`（无 prerelease 标签）/ `tag`（任意最新标签）；`master`、`branch`、`release` 为别名 |
+| `DSH_UPDATE_AUTO_RESTART=0` | 关掉「更新完自动重启」，回到「更新 → 手动点重启生效」两步确认 |
+| `DSH_UPDATE_AUTO_CHECK=0` | 关掉后台预构建巡检（默认开，约每 30 分钟一次，只构建、不自动重启） |
+| `DSH_UPDATE_AUTO_CHECK_INTERVAL_MS` | 预构建巡检间隔（默认 `1800000`＝30 分钟，允许 60000–2147483647） |
+| `DSH_UPDATE_AUTO_CHECK_JITTER` | 巡检抖动比例（默认 `0.2`，取值 0–1） |
 | `DSH_UPDATE_ALLOW_ANY_ORIGIN=1` | 放宽 origin 校验（只在你确实要从别处拉代码时用） |
 | `DSH_UPDATE_ENTRY` | 只给自检用：指定试运行入口 |
 

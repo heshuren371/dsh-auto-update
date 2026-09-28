@@ -88,6 +88,30 @@
 未采用：electron-updater 本体、通用 feed、自动轮询（官方 10min + 退避 + 抖动，本插件仍为手动检查）、
 白名单 journal（本插件的失败报告刻意保留完整日志给 agent 排查）。可选后续列在对比文档里。
 
+### v0.6：更新完自动重启 + 后台预构建（提速）
+
+本机构建实测（warm pnpm store，origin/master = 0.2.0-rc.1）：
+
+| 阶段 | 耗时 |
+| --- | --- |
+| `pnpm install`（全新 worktree，硬链接自 store） | 4s |
+| `build:native-system`（未改动，缓存命中） | 1s |
+| `build:lib:host`（`tsc -b` + tsdown host） | 47s |
+| `build:lib:client`（`tsc -b` + tsdown client） | 32s |
+| `build:web`（vite） | 2s |
+| **合计** | **86s** |
+
+瓶颈就是两次 `tsc -b` + tsdown（host/client 串行、共享项目图，不并行以保证产物正确性）。
+因此提速不靠压构建，而靠**把构建挪到用户点击之前**：
+
+| 变化 | 说明 |
+| --- | --- |
+| 后台预构建 | 默认每约 30 分钟巡检（间隔 1800000ms、抖动 0.2，对齐官方 `update-schedule` 的区间校验）；发现新提交且没有同提交候选时提前构建，**不自动重启** |
+| 候选复用 | `startUpdate` 检测到同提交且 `canaryOk` 的候选时跳过构建直接进入 `done`；用户点「更新」的等待从 ~110s 降到 ~0s（随后只剩切换） |
+| 更新完自动重启 | `AUTO_RESTART`（默认开）：试运行通过后由宿主直接落切换 job，`delayMs=3000` 给界面 3s 渲染提示；手动重启仍为 0 立即切换；**后台预构建触发的更新不自动重启**（避免打断用户会话） |
+| 关闭开关 | `DSH_UPDATE_AUTO_RESTART=0` 回到两步确认；`DSH_UPDATE_AUTO_CHECK=0` 关闭后台巡检 |
+| 调度器语义 | 纯函数 `resolveAutoCheckConfig` 校验区间（60000–2147483647 / 抖动 0–1），配置非法时明确关掉并在日志说明 |
+
 ### 组件
 
 | 文件 | 职责 |
@@ -140,6 +164,19 @@ PATH 的最前面（pnpm 里的 git 调用一并受益）。worktree 回溯主�
 - v0.3 的测试边界：`clienttest` 覆盖渲染与 effect 路径，但不含真实浏览器 DOM 事件、
   React 严格模式/并发与视觉断言；`selftest` 的 `resolveGitBin` 断言要求机器上存在
   可用的 git（插件本身也依赖它）。
+- **v0.6 的自动重启边界**：默认开，构建/试运行一通过就自动切换（页面会断开重连）；
+  要回到两步确认设 `DSH_UPDATE_AUTO_RESTART=0`。**后台预构建触发的更新不会自动重启**，
+  只把候选备好，避免在用户干活时打断会话。
+- **自检必须关掉自动重启**：`selftest` 在导入宿主前强制 `DSH_UPDATE_AUTO_RESTART=0`
+  与 `DSH_UPDATE_AUTO_CHECK=0`；否则 `--pipeline` 会真的去切 3080（曾经发生过）。
+- **第三方守护的交互**：本机装了 `com.dsh.doctor` 的 launchd supervisor（`KeepAlive`），
+  它会在旧进程退出后抢先拉起旧入口、和切换器抢端口。切换器按「等旧进程退出 → 只清理
+  命令行匹配本次 prev/new 入口的占用者 → 起新版本并校验」处理，实测切换成功；但存在
+  这类守护时切换窗口更窄，属于已知交互。
+- **切换器的清理口径已收紧**：只有命令行里出现本次 `prev.entry`/`new.entry` 的进程才会被
+  清理（不再「任何 dsh web 都算自己人」）；宿主传的 launchd label 也只在确认作业属于旧进程时
+  才摘。宁可拒绝清理并报错，也不误杀别的 dsh 实例。
+- 后台预构建目前是固定间隔 + 抖动（默认 30 分钟），失败后不指数退避（官方 schedule 有）。
 
 ## 它做了什么
 

@@ -217,6 +217,9 @@ const isolatedStateDir = implicitStateDir
   ? mkdtempSync(path.join(os.tmpdir(), 'dsh-update-state-'))
   : process.env.DSH_UPDATE_STATE
 process.env.DSH_UPDATE_STATE = isolatedStateDir
+// 自检绝不能触发真实重启：关掉自动重启与后台预构建（否则 --pipeline 会去切 3080）。
+process.env.DSH_UPDATE_AUTO_RESTART = '0'
+process.env.DSH_UPDATE_AUTO_CHECK = '0'
 
 // -- 失败分类与 agent 修复提示词（v0.4：失败要能直接交给模型/agent）
 const { __testing } = await import('../lib/index.js')
@@ -270,6 +273,20 @@ for (const [value] of channelCases) {
   channelResults.push(__testing.updateChannel())
 }
 equal('通道别名归一', channelResults, channelCases.map(([, expected]) => expected))
+
+// -- 后台预构建轮询配置（对齐官方 update-schedule 的区间校验）
+const autoDefaults = __testing.resolveAutoCheckConfig({})
+equal('预构建默认 30 分钟 / 20% 抖动', [autoDefaults.intervalMs, autoDefaults.jitter], [1_800_000, 0.2])
+check('预构建间隔下界被拒', (() => {
+  try { __testing.resolveAutoCheckConfig({ DSH_UPDATE_AUTO_CHECK_INTERVAL_MS: '59999' }); return false } catch { return true }
+})())
+check('预构建抖动越界被拒', (() => {
+  try { __testing.resolveAutoCheckConfig({ DSH_UPDATE_AUTO_CHECK_JITTER: '2' }); return false } catch { return true }
+})())
+check('预构建自定义值生效', (() => {
+  const config = __testing.resolveAutoCheckConfig({ DSH_UPDATE_AUTO_CHECK_INTERVAL_MS: '600000', DSH_UPDATE_AUTO_CHECK_JITTER: '0' })
+  return config.intervalMs === 600_000 && config.jitter === 0
+})())
 if (previousChannel === undefined) delete process.env.DSH_UPDATE_CHANNEL
 else process.env.DSH_UPDATE_CHANNEL = previousChannel
 
