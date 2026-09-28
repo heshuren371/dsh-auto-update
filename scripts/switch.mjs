@@ -258,6 +258,26 @@ function writeRuntimeActive(spec, extra) {
 }
 
 async function main() {
+  // 版本绑定校验（对齐官方 Desktop updater：只安装用户在界面上确认过的那个版本）。
+  // 必须放在摘 launchd / 杀旧进程之前：校验失败时正在运行的服务完全不受影响。
+  if (typeof job.new?.version === 'string' && job.new.version.length > 0) {
+    let onDisk = null
+    try {
+      const root = path.resolve(path.dirname(job.new.entry), '..', '..', '..')
+      const pkg = JSON.parse(readFileSync(path.join(root, 'package.json'), 'utf8'))
+      onDisk = typeof pkg.version === 'string' ? pkg.version : null
+    } catch {
+      // 读不到就不阻断，后续就绪校验仍会兜底。
+    }
+    if (onDisk !== null && onDisk !== job.new.version) {
+      setStatus({
+        phase: 'failed',
+        error: `目标版本不匹配：界面确认 ${job.new.version}，磁盘上是 ${onDisk}`,
+        message: '已拒绝切换（未触碰正在运行的服务）',
+      })
+      process.exit(1)
+    }
+  }
   appendLog(`job=${jobPath} oldPid=${job.oldPid} port=${PORT}`)
   setStatus({ message: `等待旧服务退出（pid ${job.oldPid}）` })
 

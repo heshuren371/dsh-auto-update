@@ -1,6 +1,6 @@
 {
   "name": "@local/dsh-auto-update",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "private": true,
   "description": "在「设置 → 通用」里一键检测并更新 DeepSeek Harness：在蓝绿副本里构建、用真实 profile 试运行、通过后由独立切换器安全重启，失败自动回滚。",
   "license": "MIT",
@@ -23,6 +23,7 @@
     "lib/client.js",
     "lib/util.js",
     "lib/probe.js",
+    "lib/semver.js",
     "scripts/install.mjs",
     "scripts/switch.mjs",
     "scripts/selftest.mjs",
@@ -37,6 +38,7 @@
     "README.md",
     "LICENSE",
     "docs/DESIGN.md",
+    "docs/UPSTREAM-UPDATE.md",
     "docs/settings-general.png"
   ],
   "dsh": {

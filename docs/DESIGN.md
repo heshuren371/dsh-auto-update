@@ -72,12 +72,29 @@
 | 交付 agent | `GET /api/failure` 取完整报告；`POST /api/assist` 用 `headless` profile 后台起一个 dsh 会话读 `agentPrompt` 尝试修复（日志写 `failures/assist-*.log`，状态进 `publicState.assist`）；`scripts/repair.mjs` 提供 CLI 同款能力 |
 | 流水线日志 | 全程落盘到 `pipeline.log`（上限 8MB），失败时截尾部进报告；界面内存环形缓冲不变 |
 
+### v0.5：对齐官方 Desktop 更新器的语义
+
+官方自动更新只面向 **Desktop 打包应用**（`electron-updater` + 内部 CDN generic feed +
+签名安装包，`channel: 'nightly'`）；web/CLI 的源码构建场景没有官方更新器，其本体不可复用。
+逐项对比见 [UPSTREAM-UPDATE.md](UPSTREAM-UPDATE.md)。本次采用它的判定与状态语义：
+
+| 采用点 | 说明 |
+| --- | --- |
+| 通道模型 | `nightly`（默认，master 分支）/ `rc` / `alpha` / `stable`（无 prerelease 标签）/ `tag`；`master`、`branch`、`release` 归一为别名，非法值回退 nightly |
+| semver 判定 | 新增零依赖 `lib/semver.js`；标签通道必须 `valid()` + `gt(目标, 运行版本)` 才允许构建，拒绝降级/平级空转（对齐官方 `update-coordinator.ts:188-191`） |
+| 版本绑定切换 | `switch.mjs` 在摘 launchd/杀旧进程前校验「磁盘版本 == 界面确认版本」，不匹配即 `failed` 退出且不碰服务（对齐官方 `version !== candidate` 拒绝） |
+| 空闲超时 | `runBash` 支持 `idleTimeoutMs`（有输出即重置）；fetch 用「空闲 60s / 总 120s」，对齐官方「静默才算卡死」的判据 |
+
+未采用：electron-updater 本体、通用 feed、自动轮询（官方 10min + 退避 + 抖动，本插件仍为手动检查）、
+白名单 journal（本插件的失败报告刻意保留完整日志给 agent 排查）。可选后续列在对比文档里。
+
 ### 组件
 
 | 文件 | 职责 |
 | --- | --- |
 | `lib/util.js` | shell 转义、进程组回收、行缓冲、有界错误行缓冲、原子写文件；**可用 git 解析**（Xcode 许可拦住 `/usr/bin/git` 时自动改用 CLT/Xcode 自带 git，见下） |
 | `lib/probe.js` | 空闲端口、候选入口试运行（可登记/回收子进程）、loader 冲突解析、禁用 patch 生成 |
+| `lib/semver.js` | 零依赖 semver 校验/比较：标签通道的「严格高于当前版本」判定（对齐官方 `valid()` + `gt()`） |
 | `scripts/switch.mjs` | 独立切换器：摘掉托管旧服务的 launchd 作业（keepalive 会把旧进程拉回来）→ 等旧进程退出 → 清端口残留 → 起新版本 → 校验 → 失败回滚 |
 | `scripts/selftest.mjs` | 纯函数/边界/失败分类单测（93 项）；`--integration` 真实 profile 试运行；`--pipeline` 全流水线 |
 | `scripts/repair.mjs` | 失败报告 CLI：摘要 / `--prompt` / `--json` / `--clear` / `--assist`（可 `--dry-run`） |

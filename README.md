@@ -112,7 +112,7 @@ cd ~/.dsh/profiles/web && pnpm install
 | --- | --- |
 | `DSH_UPDATE_REPO` | 显式指定 harness 主仓库路径（默认从 dsh 入口向上探测，兜底 `~/deepseek-harness`） |
 | `DSH_UPDATE_STATE` | 状态目录（默认 `$DSH_HOME/dsh-auto-update`） |
-| `DSH_UPDATE_CHANNEL` | `master`（默认，跟随分支）/ `tag`（跟随最新 `dsh-v*` 标签） |
+| `DSH_UPDATE_CHANNEL` | 更新通道（命名对齐官方 Desktop 更新器）：`nightly`（默认，跟随 master 分支）/ `rc` / `alpha` / `stable`（无 prerelease 标签）/ `tag`（任意最新标签）；`master`、`branch`、`release` 为别名 |
 | `DSH_UPDATE_ALLOW_ANY_ORIGIN=1` | 放宽 origin 校验（只在你确实要从别处拉代码时用） |
 | `DSH_UPDATE_ENTRY` | 只给自检用：指定试运行入口 |
 
@@ -162,7 +162,9 @@ node ~/deepseek-harness/apps/cli/lib/bin.js web
 **插件被临时禁用**：设置行会列出 id。升级/替换对应插件后点「重新启用插件」，
 下次更新或重启会重新加载它。
 
-**想固定用某个标签**：`export DSH_UPDATE_CHANNEL=tag`。
+**想避开 master 的开发版**：`export DSH_UPDATE_CHANNEL=rc`（最新 `dsh-v*-rc.N` 标签）
+或 `alpha` / `stable` / `tag`。标签通道带 semver 守卫：目标不高于当前运行版本时会直接
+提示「无需更新」，不会降级，也不会做平级空转构建。
 
 ## 说明
 
@@ -193,7 +195,8 @@ node scripts/switchtest.mjs        # 切换器：外部进程安全 + 成功 + �
 node scripts/build-demo.mjs        # 生成 demo/ 下的动态插件预览代码
 ```
 
-设计细节、事故复盘与安全边界见 [docs/DESIGN.md](docs/DESIGN.md)。
+设计细节、事故复盘与安全边界见 [docs/DESIGN.md](docs/DESIGN.md)；
+与官方 Desktop 自动更新的逐项对比见 [docs/UPSTREAM-UPDATE.md](docs/UPSTREAM-UPDATE.md)。
 
 ## License
 

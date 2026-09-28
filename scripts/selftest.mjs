@@ -246,6 +246,33 @@ check('agentPrompt 含复现命令与目标信息', agentPrompt.includes('cd /sl
 check('agentPrompt 含安全约束', agentPrompt.includes('不要重启') && agentPrompt.includes('3080'))
 check('agentPrompt 含日志尾部', agentPrompt.includes('line-2') && agentPrompt.includes('/logs/latest.log'))
 
+// -- semver 与通道（对齐官方 Desktop updater：valid() + semver.gt 才认为有更新）
+const sv = await import('../lib/semver.js')
+equal('semver 合法性', [
+  sv.isValidVersion('0.2.0-rc.1'), sv.isValidVersion('1.2.3+build'), sv.isValidVersion('v1.2.3'), sv.isValidVersion('abc'),
+], [true, true, false, false])
+equal('semver 0.2.0-rc.1 > 0.1.7-rc.2', sv.compareVersions('0.2.0-rc.1', '0.1.7-rc.2'), 1)
+equal('semver rc 数字按数值比较', sv.compareVersions('0.1.7-rc.10', '0.1.7-rc.2'), 1)
+equal('semver 正式版大于预发布', sv.compareVersions('1.0.0', '1.0.0-rc.1'), 1)
+equal('semver 字母序', sv.compareVersions('1.0.0-alpha.1', '1.0.0-beta.1'), -1)
+equal('semver 相等', sv.compareVersions('0.2.0-rc.1', '0.2.0-rc.1'), 0)
+check('非法版本的 gt 判定为 false', sv.isGreaterVersion('x', '1.0.0') === false)
+
+const previousChannel = process.env.DSH_UPDATE_CHANNEL
+const channelCases = [
+  [undefined, 'nightly'], ['master', 'nightly'], ['nightly', 'nightly'], ['', 'nightly'],
+  ['tag', 'tag'], ['rc', 'rc'], ['alpha', 'alpha'], ['stable', 'stable'], ['RELEASE', 'stable'], ['bogus', 'nightly'],
+]
+const channelResults = []
+for (const [value] of channelCases) {
+  if (value === undefined) delete process.env.DSH_UPDATE_CHANNEL
+  else process.env.DSH_UPDATE_CHANNEL = value
+  channelResults.push(__testing.updateChannel())
+}
+equal('通道别名归一', channelResults, channelCases.map(([, expected]) => expected))
+if (previousChannel === undefined) delete process.env.DSH_UPDATE_CHANNEL
+else process.env.DSH_UPDATE_CHANNEL = previousChannel
+
 // -- 空闲端口
 const port = await findFreePort()
 check('findFreePort 返回合法端口', Number.isInteger(port) && port > 0 && port < 65536, String(port))

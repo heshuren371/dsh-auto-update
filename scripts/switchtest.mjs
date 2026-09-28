@@ -301,6 +301,31 @@ try {
   check('回滚后的服务可访问', httpCode('http://127.0.0.1:' + badPort + '/') === '401')
   if (Number.isInteger(recovered)) cleanupPids.push(recovered)
   await killAndWait(recovered)
+
+  process.stdout.write('== 版本绑定校验 ==\n')
+  const mismatchPort = await findFreePort()
+  const mismatchDir = path.join(BASE, 'version-mismatch')
+  mkdirSync(mismatchDir, { recursive: true })
+  const old3 = startServer(PREV_ENTRY, mismatchPort, path.join(mismatchDir, 'old.log'))
+  cleanupPids.push(old3.pid)
+  const listener3 = await waitPort(mismatchPort, 90_000)
+  check('旧服务已监听', listener3 !== null, 'pid=' + listener3)
+  const entryRoot = path.resolve(path.dirname(NEW_ENTRY), '..', '..', '..')
+  const realVersion = readJson(path.join(entryRoot, 'package.json'))?.version ?? null
+  const mismatchJob = writeJob(mismatchDir, {
+    oldPid: old3.pid,
+    port: mismatchPort,
+    new: { entry: NEW_ENTRY, args: ['web', '--port', String(mismatchPort), '--no-open'], root: null, version: '0.0.0-definitely-not-installed', commit: null },
+    prev: { entry: PREV_ENTRY, args: ['web', '--port', String(mismatchPort), '--no-open'], root: null, version: realVersion, commit: null },
+  })
+  const mismatchCode = runSwitch(mismatchJob)
+  const mismatchStatus = readJson(path.join(mismatchDir, 'switch-status.json'))
+  check('版本不匹配时拒绝切换（退出码非 0）', mismatchCode !== 0, 'code=' + mismatchCode)
+  check('状态说明版本不匹配', mismatchStatus !== null && mismatchStatus.phase === 'failed'
+    && String(mismatchStatus.error ?? '').includes('版本不匹配'), JSON.stringify(mismatchStatus))
+  check('旧服务未被触碰（仍在监听）', (await waitPort(mismatchPort, 5000)) === old3.pid && aliveReal(old3.pid))
+  check('未写 runtime.json', readJson(path.join(mismatchDir, 'runtime.json')) === null)
+  await killAndWait(old3.pid)
 } finally {
   for (const pid of cleanupPids) await killAndWait(pid)
   if (!KEEP) rmSync(BASE, { recursive: true, force: true })
