@@ -167,7 +167,7 @@ rm -rf ~/.dsh/dsh-auto-update         # 副本与运行指针，删掉不影响�
 ## 开发
 
 ```sh
-npm test                              # selftest 166 项 + clienttest 285 项
+npm test                              # selftest 166 项 + clienttest 288 项
 node scripts/selftest.mjs --pipeline  # 全流水线：全新副本构建 + 真实 profile 试运行（临时状态目录）
 node scripts/switchtest.mjs           # 切换器：外部进程安全 + 成功 + 回滚 + 版本绑定（空闲端口）
 node scripts/repair.mjs --prompt      # 最近一次失败交给 agent 的提示词

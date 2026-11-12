@@ -325,6 +325,8 @@ function hostState(overrides) {
     quarantined: [],
     runtime: runtimeInfo(),
     switch: null,
+    // 桌面版 feed 检查结果；旧版宿主连这个键都没有。
+    desktop: null,
     // 宿主身份：桌面版（Electron Host）会带 canSelfUpdate=false。
     environment: { kind: 'node', desktop: false, canSelfUpdate: true, reason: null },
   }, overrides)
@@ -1286,6 +1288,24 @@ process.stdout.write('\n== 场景：桌面版检查更新走官方更新器 ==\n
     await settle()
     check('无桌面桥：不发 check / desktop-update',
       !fetchCalls.some((url) => routeKey(url) === 'check' || routeKey(url) === 'desktop-update'), fetchCalls.join(', '))
+
+    // 旧版桌面宿主没有 /desktop-update：提示先重启应用，按钮保持禁用。
+    const staleState = hostState({ environment: env })
+    delete staleState.desktop
+    globalThis.dshDesktop = bridge(() => { opened.push('open'); return Promise.resolve() })
+    startScenario(queueFor(staleState))
+    routes = { state: staleState }
+    fetchCalls = []
+    const stale = renderRoot()
+    runEffects()
+    await settle()
+    expectText(stale.text, '桌面版宿主还是旧版本')
+    const staleButton = findButton('检查桌面版更新')
+    check('旧版宿主：检查按钮禁用', staleButton !== undefined && staleButton.disabled === true,
+      world.buttons.map((b) => b.label + (b.disabled ? '(禁用)' : '')).join(' / '))
+    staleButton?.onClick()
+    await settle()
+    check('旧版宿主：不发 desktop-update', !fetchCalls.some((url) => routeKey(url) === 'desktop-update'), fetchCalls.join(', '))
 
     // 普通 node 的 dsh web：照旧走插件的 git 更新。
     startScenario(queueFor(hostState()))

@@ -180,7 +180,7 @@ rc 线发布，没有第三条路。
 | `scripts/switch.mjs` | 独立切换器：摘掉托管旧服务的 launchd 作业（keepalive 会把旧进程拉回来）→ 等旧进程退出 → 清端口残留 → 起新版本 → 校验 → 失败回滚 |
 | `scripts/selftest.mjs` | 纯函数/边界/失败分类单测（166 项）；`--integration` 真实 profile 试运行；`--pipeline` 全流水线 |
 | `scripts/repair.mjs` | 失败报告 CLI：摘要 / `--prompt` / `--json` / `--clear` / `--assist`（可 `--dry-run`） |
-| `scripts/clienttest.mjs` | 客户端渲染回归（285 项）：React/ctx stub 驱动 `lib/client.js`，覆盖 14 种 host state、事故原路径、迟到响应竞态、错误边界、zh/en 字典一致性 |
+| `scripts/clienttest.mjs` | 客户端渲染回归（288 项）：React/ctx stub 驱动 `lib/client.js`，覆盖 14 种 host state、事故原路径、迟到响应竞态、错误边界、zh/en 字典一致性 |
 | `scripts/switchtest.mjs` | 切换器沙箱集成测试：外部进程安全（绝不误杀）+ 成功路径 + 回滚路径，全程空闲端口 |
 | `scripts/use-managed-dsh.mjs` | 生成 `~/.local/bin/dsh` shim：终端 `dsh` 优先运行 `active-entry` 的受管版本，指针失效回退原命令；`--check` / `--remove` |
 | `lib/index.js` | 路由、状态机、蓝绿流水线、隔离重试、切换任务编排 |
