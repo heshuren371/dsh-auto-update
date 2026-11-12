@@ -67,10 +67,16 @@ NODE_BIN="${NODE_BIN:-$(command -v node || true)}"
 
 # 优先用受管版本（dsh-auto-update 的 active-entry），没有才退回 PATH 上的 dsh。
 ACTIVE_ENTRY="${DSH_HOME:-$HOME/.dsh}/dsh-auto-update/active-entry"
+DSH_ENTRY=""
 if [ -z "${DSH_BIN:-}" ] && [ -f "$ACTIVE_ENTRY" ] && [ -s "$ACTIVE_ENTRY" ]; then
   DSH_ENTRY="$(cat "$ACTIVE_ENTRY")"
-  DSH_BIN="(active-entry)"
-else
+  case "$DSH_ENTRY" in
+    # 桌面版（Electron）写在 app.asar 里的入口，普通 node 打不开，退回 PATH 上的 dsh。
+    */.asar/*) DSH_ENTRY="" ;;
+  esac
+  [ -n "$DSH_ENTRY" ] && DSH_BIN="(active-entry)"
+fi
+if [ -z "$DSH_ENTRY" ]; then
   DSH_BIN="${DSH_BIN:-$(command -v dsh || true)}"
   [ -n "$DSH_BIN" ] || fail "PATH 里找不到 dsh"
   DSH_ENTRY="$("$NODE_BIN" -e 'const fs=require("fs");process.stdout.write(fs.realpathSync(process.argv[1]))' "$DSH_BIN" 2>/dev/null || true)"

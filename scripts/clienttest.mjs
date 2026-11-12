@@ -14,10 +14,12 @@
  *      useEffect 在渲染后按顺序执行一次，useRef 返回稳定对象；
  *   3. ctx stub：effect / slots / locale，locale.bind 带 {占位符} 插值（与宿主行为一致）；
  *   4. 对若干宿主状态各渲染一次并执行 effect，断言不抛错、关键文案与按钮出现；
- *      另有六组特殊用例：点「立即更新」进入 updating 的完整回归、
+ *      另有九组特殊用例：点「立即更新」进入 updating 的完整回归、
  *      迟到的 /state 响应不得覆盖 POST 状态的竞态、错误边界兜底、
  *      复制诊断报告（agentPrompt 与整包 JSON 退化）、
- *      剪贴板被拒时退回 execCommand、让 dsh 帮忙修复的两次确认。
+ *      剪贴板被拒时退回 execCommand、让 dsh 帮忙修复的两次确认、
+ *      更新内容（changes）的展示与退化、上游别处有更新（elsewhere）的展示与退化、
+ *      按通道一键更新到上游最新版本。
  *
  * 全程不联网、不起进程、不碰 ~/.dsh 状态目录（也不读它）。
  * 用法：node scripts/clienttest.mjs
@@ -198,6 +200,8 @@ function renderNode(node) {
     if (type === 'button') {
       world.buttons.push({ label: children, disabled: node.props.disabled === true, onClick: node.props.onClick })
     }
+    // 提交列表行：用来断言条数与 items 一致。
+    if (type === 'li') world.listItems.push(children)
     return children
   }
   if (typeof type === 'function') {
@@ -301,6 +305,7 @@ function runtimeInfo(overrides) {
     active: { version: '0.2.1', entry: '/opt/dsh/index.js', commit: SHA_A, short: 'abc1234' },
     candidate: null,
     candidateCanaryOk: false,
+    candidateIsRunning: false,
     channel: 'master',
   }, overrides)
 }
@@ -320,6 +325,8 @@ function hostState(overrides) {
     quarantined: [],
     runtime: runtimeInfo(),
     switch: null,
+    // 宿主身份：桌面版（Electron Host）会带 canSelfUpdate=false。
+    environment: { kind: 'node', desktop: false, canSelfUpdate: true, reason: null },
   }, overrides)
 }
 
@@ -356,6 +363,35 @@ function failureBundle(overrides) {
   }, overrides)
 }
 
+/** snapshot.changes：区间内的非 merge 提交（items 已由宿主截断）。 */
+function changesInfo(overrides) {
+  return Object.assign({
+    total: 935,
+    shown: 3,
+    from: 'aaaaaaaa',
+    to: 'bbbbbbbb',
+    fromVersion: '0.2.0-rc.2',
+    toVersion: '0.2.1-alpha.2',
+    summary: { feat: 12, fix: 30, other: 5 },
+    items: [
+      { short: 'abc1234', subject: 'feat: 增加更新内容展示', date: '2025-09-17T10:00:00Z', author: 'x' },
+      { short: 'def5678', subject: 'fix: 修复重启按钮判定', date: '2025-09-17T09:00:00Z', author: 'y' },
+      { short: '0123abc', subject: 'chore: 杂项', date: '2025-09-17T08:00:00Z', author: 'z' },
+    ],
+  }, overrides)
+}
+
+/** snapshot.elsewhere：当前通道没有更新、上游别处有更新时的提示；channel 是能取到该 tag 的通道。 */
+function elsewhereInfo(overrides) {
+  return Object.assign({
+    newestTag: 'dsh-v0.2.1-alpha.2',
+    newestVersion: '0.2.1-alpha.2',
+    upstream: 'origin/master',
+    upstreamAhead: 935,
+    channel: 'alpha',
+  }, overrides)
+}
+
 /**
  * 组件的 useState 调用顺序：state / log / failed / showLog / armed / restartNote / pending。
  * 复制与 AI 修复新增的 useState 排在 useRef 之后、默认取初始值，前 7 项保持不变。
@@ -384,6 +420,8 @@ globalThis.fetch = async (url, options) => {
     key,
     method: options !== null && options !== undefined && typeof options.method === 'string' ? options.method : 'GET',
     headers: options !== null && options !== undefined && options.headers !== undefined ? options.headers : null,
+    // 变更类接口的请求体：用来断言「一键更新」确实带上了目标通道。
+    body: options !== null && options !== undefined && options.body !== undefined ? options.body : null,
   })
   const route = Object.prototype.hasOwnProperty.call(routes, key) ? routes[key] : { ok: true }
   // 路由值可以是函数，函数也可以返回 Promise：竞态用例靠它把某个响应挂起，
@@ -399,11 +437,12 @@ globalThis.fetch = async (url, options) => {
 }
 
 function startScenario(queue) {
-  world = { instances: new Map(), queue: queue.slice(), queueTaken: false, active: null, buttons: [], boundary: false }
+  world = { instances: new Map(), queue: queue.slice(), queueTaken: false, active: null, buttons: [], listItems: [], boundary: false }
 }
 
 function renderRoot() {
   world.buttons = []
+  world.listItems = []
   world.boundary = false
   let text = ''
   const errors = []
@@ -453,6 +492,15 @@ async function settle() {
 
 function findButton(label) {
   return world.buttons.find((button) => button.label === label)
+}
+
+/** 用给定宿主状态渲染一次，断言不抛错，返回可见文本。 */
+function renderState(state, label) {
+  startScenario(queueFor(state))
+  routes = { state }
+  const out = renderRoot()
+  check(label + '：渲染不抛错', out.errors.length === 0, out.errors.map(formatError).join(' | '))
+  return out.text
 }
 
 /* ---------- apply() 注册契约 ---------- */
@@ -609,6 +657,109 @@ const scenarios = [
     ],
     buttons: { '收起日志': false },
   },
+  {
+    name: '更新内容：摘要与可折叠提交列表',
+    state: hostState({
+      snapshot: snapshot({ updateAvailable: true, behind: 935, channel: 'rc', changes: changesInfo() }),
+    }),
+    expect: [
+      '0.2.0-rc.2 → 0.2.1-alpha.2 · 935 个提交（feat 12 · fix 30 · 其他 5）',
+      '查看提交列表（3）',
+      'abc1234 · feat: 增加更新内容展示',
+      'def5678 · fix: 修复重启按钮判定',
+      '0123abc · chore: 杂项',
+    ],
+    buttons: { '立即更新': false },
+    extra: () => {
+      check('提交列表条数与 items 一致', world.listItems.length === 3, 'listItems=' + world.listItems.length)
+    },
+  },
+  {
+    name: 'changes 为 null 时不显示更新内容',
+    state: hostState({ snapshot: snapshot({ updateAvailable: true, behind: 2, changes: null }) }),
+    absent: ['查看提交列表', '2 个提交'],
+  },
+  {
+    name: 'changes 形状不对时不显示更新内容且不抛错',
+    state: hostState({
+      snapshot: snapshot({
+        updateAvailable: true,
+        behind: 3,
+        changes: { total: '935', shown: 'x', from: 1, to: true, fromVersion: 3, toVersion: null, summary: 'oops', items: 'nope' },
+      }),
+    }),
+    absent: ['个提交', '查看提交列表'],
+    extra: () => {
+      check('坏形状不渲染列表', world.listItems.length === 0, JSON.stringify(world.listItems))
+    },
+  },
+  {
+    name: 'elsewhere：当前通道没有更新、上游别处有更新',
+    state: hostState({ snapshot: snapshot({ updateAvailable: false, channel: 'rc', elsewhere: elsewhereInfo() }) }),
+    expect: [
+      'rc 通道已是最新；上游最新 dsh-v0.2.1-alpha.2（origin/master 领先 935 提交），可直接更新到该版本',
+      '更新到 dsh-v0.2.1-alpha.2',
+    ],
+    absent: ['null'],
+    buttons: { '更新到 dsh-v0.2.1-alpha.2': false },
+  },
+  {
+    name: 'elsewhere 存在但有更新时不显示该提示',
+    state: hostState({ snapshot: snapshot({ updateAvailable: true, behind: 3, channel: 'rc', elsewhere: elsewhereInfo() }) }),
+    expect: ['发现 3 个新提交可更新'],
+    absent: ['通道已是最新', '更新到 dsh-v0.2.1-alpha.2'],
+  },
+  {
+    name: '候选已试运行通过且不是当前入口（canSwitch 判定回归）',
+    state: hostState({
+      snapshot: snapshot({ updateAvailable: false }),
+      runtime: runtimeInfo({
+        matchesActive: true,
+        canSwitch: false,
+        candidateCanaryOk: true,
+        candidateIsRunning: false,
+        candidate: { version: '0.2.1-alpha.2', entry: '/opt/dsh-b/index.js', commit: SHA_B, short: 'def5678' },
+      }),
+    }),
+    expect: ['新版本已通过真实 profile 试运行，可重启生效'],
+    buttons: { '重启生效': false },
+  },
+  {
+    name: '候选就是当前入口时不出现重启按钮（canSwitch 回归）',
+    state: hostState({
+      snapshot: snapshot({ updateAvailable: false }),
+      runtime: runtimeInfo({
+        matchesActive: true,
+        canSwitch: false,
+        candidateCanaryOk: true,
+        candidateIsRunning: true,
+        candidate: { version: '0.2.1-alpha.2', entry: '/opt/dsh/index.js', commit: SHA_B, short: 'def5678' },
+      }),
+    }),
+    expect: ['已是最新版本'],
+    absent: ['重启生效'],
+    extra: () => {
+      check('无「重启生效」按钮', findButton('重启生效') === undefined, world.buttons.map((b) => b.label).join(' / '))
+    },
+  },
+  {
+    name: '桌面版托管：只解释原因，不提供更新入口',
+    state: hostState({
+      snapshot: snapshot({ updateAvailable: true, behind: 3, remote: { sha: SHA_B, short: 'def5678', subject: 'fix: 修复已知问题' } }),
+      environment: { kind: 'desktop', desktop: true, canSelfUpdate: false, reason: 'desktop' },
+      // 上一版在桌面版里留下的回滚记录：这里没有可操作性，不该再占一行。
+      switch: { phase: 'ready', port: 3080, url: null, rolledBack: true, error: 'invalid profile name' },
+    }),
+    expect: ['桌面版托管的 Host', '浏览器里不能驱动桌面版的更新器'],
+    // 桌面版没有原地更新：git 状态、更新/重启按钮都不出现，检查按钮在浏览器里也禁用。
+    absent: ['重启生效', '上次切换失败', '立即更新', '发现 3 个新提交可更新'],
+    extra: () => {
+      check('无「重启生效」按钮', findButton('重启生效') === undefined, world.buttons.map((b) => b.label).join(' / '))
+      const browserButton = findButton('请到桌面版应用检查')
+      check('浏览器里检查按钮禁用', browserButton !== undefined && browserButton.disabled === true,
+        world.buttons.map((b) => b.label + (b.disabled ? '(禁用)' : '')).join(' / '))
+    },
+  },
 ]
 
 for (const item of scenarios) {
@@ -633,6 +784,157 @@ for (const item of scenarios) {
   }
   check('无未插值占位符', !/\{[a-zA-Z][a-zA-Z0-9_]*\}/.test(result.text), preview(result.text))
   if (item.extra !== undefined) item.extra(result)
+}
+
+/* ---------- 回归：更新内容的退化与英文文案 ---------- */
+
+process.stdout.write('\n== 场景：更新内容（changes）退化与英文文案 ==\n')
+{
+  // 版本缺失只报条数、summary 为空不带括号、items 为空不显示列表。
+  const plain = renderState(hostState({
+    snapshot: snapshot({
+      updateAvailable: true,
+      behind: 12,
+      changes: { total: 12, shown: 0, from: 'aaaaaaaa', to: 'bbbbbbbb', fromVersion: null, toVersion: null, summary: {}, items: [] },
+    }),
+  }), 'changes 只报条数')
+  expectText(plain, '12 个提交')
+  expectAbsent(plain, '（')
+  expectAbsent(plain, '查看提交列表')
+  check('items 为空时不渲染列表', world.listItems.length === 0, JSON.stringify(world.listItems))
+  check('无未插值占位符', !/\{[a-zA-Z][a-zA-Z0-9_]*\}/.test(plain), preview(plain))
+
+  // changes 是标量或数组：两块都不出现。
+  const scalar = renderState(hostState({ snapshot: snapshot({ updateAvailable: true, behind: 4, changes: 42 }) }), 'changes 是标量')
+  expectAbsent(scalar, '个提交')
+  expectAbsent(scalar, '查看提交列表')
+  const arrayShape = renderState(hostState({ snapshot: snapshot({ updateAvailable: true, behind: 4, changes: [] }) }), 'changes 是数组')
+  expectAbsent(arrayShape, '个提交')
+  expectAbsent(arrayShape, '查看提交列表')
+
+  // 提交说明截断到约 100 字符。
+  const longSubject = 'x'.repeat(140)
+  const long = renderState(hostState({
+    snapshot: snapshot({
+      updateAvailable: true,
+      behind: 1,
+      changes: changesInfo({ total: 1, summary: {}, items: [{ short: 'aaa1111', subject: longSubject, date: '', author: '' }] }),
+    }),
+  }), '提交说明截断')
+  expectText(long, 'aaa1111 · ' + longSubject.slice(0, 100) + '…')
+  expectAbsent(long, 'x'.repeat(101))
+
+  // 英文文案：临时把 zh 字典换成 en 渲染一次。
+  const zhDict = dicts.zh
+  dicts.zh = dicts.en
+  const en = renderState(hostState({
+    snapshot: snapshot({ updateAvailable: true, behind: 935, changes: changesInfo() }),
+  }), 'changes 英文')
+  dicts.zh = zhDict
+  expectText(en, '0.2.0-rc.2 → 0.2.1-alpha.2 · 935 commit(s) (feat 12 · fix 30 · other 5)')
+  expectText(en, 'View commit list (3)')
+}
+
+/* ---------- 回归：上游别处有更新的退化与英文文案 ---------- */
+
+process.stdout.write('\n== 场景：上游别处有更新（elsewhere）退化与英文文案 ==\n')
+{
+  // 一键更新按钮的 label 以「更新到」开头，用来断言各退化情形下入口缺失。
+  const hasOtherButton = () => world.buttons.some((button) => String(button.label).startsWith('更新到'))
+
+  // 没有任何可报目标（字段全缺）：整块不显示，也绝不把 null 显示出来。
+  const sparse = renderState(hostState({
+    snapshot: snapshot({ updateAvailable: false, channel: 'rc', elsewhere: { newestTag: null, newestVersion: null, upstream: null, upstreamAhead: null } }),
+  }), 'elsewhere 空字段')
+  expectAbsent(sparse, '通道已是最新')
+  expectAbsent(sparse, 'null')
+  check('elsewhere 无目标时不出现一键更新按钮', !hasOtherButton(), world.buttons.map((b) => b.label).join(' / '))
+
+  // elsewhere 是数组：整块不出现。
+  const arrayElsewhere = renderState(hostState({ snapshot: snapshot({ updateAvailable: false, channel: 'rc', elsewhere: [] }) }), 'elsewhere 是数组')
+  expectAbsent(arrayElsewhere, '通道已是最新')
+
+  // 通道名缺失：退化为「当前通道已是最新」。
+  const noChannel = renderState(hostState({
+    snapshot: snapshot({ updateAvailable: false, elsewhere: { newestTag: 'dsh-v0.2.1-alpha.2', newestVersion: null, upstream: 'origin/master', upstreamAhead: 935 } }),
+  }), 'elsewhere 无通道')
+  expectText(noChannel, '当前通道已是最新；上游最新 dsh-v0.2.1-alpha.2（origin/master 领先 935 提交）')
+  expectAbsent(noChannel, 'null')
+  check('elsewhere.channel 缺失时不出现一键更新按钮', !hasOtherButton(), world.buttons.map((b) => b.label).join(' / '))
+
+  // newestTag 缺失：提示里不再写「上游最新 X」，且没有 channel 时不出现入口。
+  const versionOnly = renderState(hostState({
+    snapshot: snapshot({ updateAvailable: false, channel: 'rc', elsewhere: { newestTag: null, newestVersion: '0.2.1-alpha.2', upstream: null, upstreamAhead: null } }),
+  }), 'elsewhere 只有版本')
+  expectText(versionOnly, 'rc 通道已是最新，可直接更新到该版本')
+  expectAbsent(versionOnly, 'null')
+  check('只有版本、没有 channel 时不出现一键更新按钮', !hasOtherButton(), world.buttons.map((b) => b.label).join(' / '))
+
+  // 没有可报的发布标签（例如运行版本就是最新发布，只是 master 领先）：
+  // 宿主不给 elsewhere，界面不该出现提示或按钮。
+  const noTarget = renderState(hostState({
+    snapshot: snapshot({ updateAvailable: false, channel: 'rc', elsewhere: { newestTag: null, newestVersion: null, upstream: 'origin/master', upstreamAhead: 10, channel: 'nightly' } }),
+  }), 'elsewhere 没有发布标签')
+  expectAbsent(noTarget, '通道已是最新')
+  check('没有可报标签时不出现一键更新按钮', !hasOtherButton(), world.buttons.map((b) => b.label).join(' / '))
+
+  // channel 类型不对或为空字符串：当作没有，不显示入口也不抛错。
+  const badChannel = renderState(hostState({
+    snapshot: snapshot({ updateAvailable: false, channel: 'rc', elsewhere: elsewhereInfo({ channel: 42 }) }),
+  }), 'elsewhere 通道类型不对')
+  expectText(badChannel, '可直接更新到该版本')
+  check('channel 不是字符串时不出现一键更新按钮', !hasOtherButton(), world.buttons.map((b) => b.label).join(' / '))
+  renderState(hostState({
+    snapshot: snapshot({ updateAvailable: false, channel: 'rc', elsewhere: elsewhereInfo({ channel: '' }) }),
+  }), 'elsewhere 通道为空串')
+  check('channel 为空字符串时不出现一键更新按钮', !hasOtherButton(), world.buttons.map((b) => b.label).join(' / '))
+
+  // 英文文案。
+  const zhDict = dicts.zh
+  dicts.zh = dicts.en
+  const en = renderState(hostState({
+    snapshot: snapshot({ updateAvailable: false, channel: 'rc', elsewhere: elsewhereInfo() }),
+  }), 'elsewhere 英文')
+  dicts.zh = zhDict
+  expectText(en, 'rc channel is up to date; upstream latest dsh-v0.2.1-alpha.2 (935 commits ahead on origin/master), update to it directly')
+  check('英文下出现「Update to {tag}」按钮', findButton('Update to dsh-v0.2.1-alpha.2') !== undefined, world.buttons.map((b) => b.label).join(' / '))
+}
+
+/* ---------- 回归：按通道一键更新到上游最新版本 ---------- */
+
+process.stdout.write('\n== 场景：一键更新到上游最新版本（/update 带通道）==\n')
+{
+  const idle = hostState({ snapshot: snapshot({ updateAvailable: false, channel: 'rc', elsewhere: elsewhereInfo() }) })
+  const updating = hostState({ phase: 'updating', step: 'fetch', seq: 9, snapshot: snapshot({ updateAvailable: false, channel: 'alpha' }) })
+  startScenario(queueFor(idle))
+  routes = { state: idle, update: updating }
+  fetchCalls = []
+  fetchRequests = []
+  const first = renderRoot()
+  const firstEffects = runEffects()
+  check('渲染与 effect 不抛错', first.errors.length === 0 && firstEffects.length === 0,
+    first.errors.concat(firstEffects).map(formatError).join(' | '))
+
+  const otherButton = findButton('更新到 dsh-v0.2.1-alpha.2')
+  check('「更新到 {tag}」按钮存在且可点', otherButton !== undefined && otherButton.disabled === false,
+    world.buttons.map((b) => b.label).join(' / '))
+  let clickError = null
+  try { otherButton?.onClick() } catch (error) { clickError = error }
+  check('点击不抛错', clickError === null, formatError(clickError))
+  await settle()
+
+  const updateRequest = fetchRequests.filter((request) => request.key === 'update').pop()
+  check('POST /update 已发出', updateRequest !== undefined && updateRequest.method === 'POST', JSON.stringify(updateRequest ?? null))
+  let body = null
+  try { body = JSON.parse(updateRequest?.body) } catch { body = null }
+  check('请求体解析为 { channel: "alpha" }', body !== null && body.channel === 'alpha' && Object.keys(body).length === 1,
+    preview(updateRequest?.body))
+  check('带 x-dsh-updater 与 JSON content-type 头',
+    updateRequest !== undefined && updateRequest.headers !== null
+      && updateRequest.headers['x-dsh-updater'] === '1'
+      && updateRequest.headers['content-type'] === 'application/json',
+    JSON.stringify(updateRequest ?? null))
+  check('宿主响应被吸收为 updating', currentValues()[0]?.phase === 'updating', `phase=${currentValues()[0]?.phase}`)
 }
 
 /* ---------- 回归：点「立即更新」→ updating ---------- */
@@ -895,6 +1197,112 @@ process.stdout.write('\n== 场景：让 dsh 帮忙修复（两次确认）==\n')
   findButton('确认让 dsh 修复？')?.onClick()
   await settle()
   expectText(renderRoot().text, '出错了：已有修复会话在运行')
+}
+
+/* ---------- 桌面版：检查更新打通官方更新器 ---------- */
+
+process.stdout.write('\n== 场景：桌面版检查更新走官方更新器 ==\n')
+{
+  const env = { kind: 'desktop', desktop: true, canSelfUpdate: false, reason: 'desktop' }
+  const desktopState = hostState({ environment: env })
+  const info = (overrides) => ({
+    ok: true, appVersion: '0.2.2-rc.2', channel: 'nightly', feedVersion: '0.2.3-rc.1',
+    newer: true, allowed: true, error: null, checkedAt: '2026-11-12T00:00:00.000Z', ...overrides,
+  })
+  const opened = []
+  const bridge = (open) => ({
+    protocolVersion: 1,
+    updates: { open, channels: { get: async () => ({ channel: 'nightly' }) } },
+  })
+  const clickCheck = async (state, desktop, open) => {
+    globalThis.dshDesktop = bridge(open)
+    startScenario(queueFor(state))
+    routes = { state, 'desktop-update': hostState({ environment: env, desktop }) }
+    fetchCalls = []
+    const rendered = renderRoot()
+    runEffects()
+    await settle()
+    findButton('检查桌面版更新')?.onClick()
+    await settle()
+    return renderRoot()
+  }
+
+  try {
+    // 基线：按钮出现、没有原地更新按钮、提示说明走官方更新器。
+    globalThis.dshDesktop = bridge(() => { opened.push('open'); return Promise.resolve() })
+    startScenario(queueFor(desktopState))
+    routes = { state: desktopState }
+    fetchCalls = []
+    const rendered = renderRoot()
+    runEffects()
+    await settle()
+    check('桌面版：出现「检查桌面版更新」按钮', findButton('检查桌面版更新') !== undefined, world.buttons.map((b) => b.label).join(' / '))
+    expectText(rendered.text, '等同菜单「检查更新…」')
+    check('桌面版：不再显示「立即更新」', findButton('立即更新') === undefined, world.buttons.map((b) => b.label).join(' / '))
+    check('桌面版：渲染不抛错', rendered.errors.length === 0, rendered.errors.map(formatError).join(' | '))
+
+    // rc/正式版且有新版：查 feed → 交给官方更新器。
+    opened.length = 0
+    const allowed = await clickCheck(desktopState, info(), () => { opened.push('open'); return Promise.resolve() })
+    check('桌面版：点击先查桌面版 feed', fetchCalls.some((url) => routeKey(url) === 'desktop-update'), fetchCalls.join(', '))
+    check('桌面版：rc 版本才调用官方 updates.open', opened.length === 1, '调用 ' + opened.length + ' 次')
+    const checkRequest = fetchRequests.find((request) => request.key === 'desktop-update')
+    check('桌面版：带上应用当前通道', checkRequest !== undefined && /"channel":"nightly"/.test(String(checkRequest.body)), String(checkRequest?.body))
+    check('桌面版：点击不走 git /api/check', !fetchCalls.some((url) => routeKey(url) === 'check'), fetchCalls.join(', '))
+    expectText(allowed.text, '发现桌面版新版本 0.2.3-rc.1')
+
+    // alpha：即使 feed 更新，也不驱动官方更新器。
+    opened.length = 0
+    const skipped = await clickCheck(desktopState, info({ feedVersion: '0.2.3-alpha.1', allowed: false }), () => { opened.push('open'); return Promise.resolve() })
+    check('桌面版：alpha 不调用官方 updates.open', opened.length === 0, '调用 ' + opened.length + ' 次')
+    expectText(skipped.text, '桌面版只更新到 rc 或正式版')
+    expectText(skipped.text, '0.2.3-alpha.1')
+
+    // 已是最新：不驱动官方更新器。
+    opened.length = 0
+    const latest = await clickCheck(desktopState, info({ feedVersion: '0.2.2-rc.2', newer: false }), () => { opened.push('open'); return Promise.resolve() })
+    check('桌面版：没有新版不调用官方 updates.open', opened.length === 0, '调用 ' + opened.length + ' 次')
+    expectText(latest.text, '桌面版已是最新（0.2.2-rc.2）')
+
+    // 读不到 feed：不驱动官方更新器，并显示原因。
+    opened.length = 0
+    const failed = await clickCheck(desktopState, info({ ok: false, feedVersion: null, newer: false, allowed: false, error: '读取桌面版更新源失败：timeout' }), () => { opened.push('open'); return Promise.resolve() })
+    check('桌面版：检查失败不调用官方 updates.open', opened.length === 0, '调用 ' + opened.length + ' 次')
+    expectText(failed.text, '读取桌面版更新源失败：timeout')
+
+    // 浏览器打开桌面版托管的服务：不能驱动官方更新器，也不退回 git 原地切换。
+    delete globalThis.dshDesktop
+    startScenario(queueFor(desktopState))
+    routes = { state: desktopState }
+    fetchCalls = []
+    const noBridge = renderRoot()
+    runEffects()
+    await settle()
+    expectText(noBridge.text, '浏览器里不能驱动桌面版的更新器')
+    const disabledButton = findButton('请到桌面版应用检查')
+    check('无桌面桥：按钮存在且禁用', disabledButton !== undefined && disabledButton.disabled === true,
+      world.buttons.map((b) => b.label + (b.disabled ? '(禁用)' : '')).join(' / '))
+    disabledButton?.onClick()
+    await settle()
+    check('无桌面桥：不发 check / desktop-update',
+      !fetchCalls.some((url) => routeKey(url) === 'check' || routeKey(url) === 'desktop-update'), fetchCalls.join(', '))
+
+    // 普通 node 的 dsh web：照旧走插件的 git 更新。
+    startScenario(queueFor(hostState()))
+    routes = { state: hostState() }
+    fetchCalls = []
+    renderRoot()
+    findButton('检查更新')?.onClick()
+    await settle()
+    check('Web 端：检查仍走 /api/check', fetchCalls.some((url) => routeKey(url) === 'check'), fetchCalls.join(', '))
+
+    // open() 失败时显示原因，不吞掉、不抛错。
+    opened.length = 0
+    const failedOpen = await clickCheck(desktopState, info(), () => Promise.reject(new Error('window unavailable')))
+    expectText(failedOpen.text, '无法打开桌面版更新：window unavailable')
+  } finally {
+    delete globalThis.dshDesktop
+  }
 }
 
 /* ---------- 字典一致性 ---------- */

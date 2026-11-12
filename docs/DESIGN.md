@@ -27,7 +27,7 @@
 | 步骤 | 做什么 | 失败时 |
 | --- | --- | --- |
 | snapshot | 记录主仓库 HEAD 到 `dsh-rollback` | 中止，不碰服务 |
-| fetch | `git fetch --prune origin`，解析目标提交（默认分支 upstream，`DSH_UPDATE_CHANNEL=tag` 时用最新 `dsh-v*` 标签） | 中止 |
+| fetch | `git fetch --prune origin`，解析目标提交（默认分支 upstream，`DSH_UPDATE_CHANNEL=tag` 时用最新 `dsh-v*` 标签）；代理连不上时用 `-c key=` 覆盖成直连重试一次 | 中止 |
 | stage | **新建一个全新 worktree**（`slots/<sha7>-<时间戳>`），不复用旧槽位 | 中止 |
 | install | 在副本里 `pnpm install` | 中止，主仓库/服务不动 |
 | build | 在副本里 `pnpm run build` | 中止 |
@@ -112,17 +112,75 @@
 | 关闭开关 | `DSH_UPDATE_AUTO_RESTART=0` 回到两步确认；`DSH_UPDATE_AUTO_CHECK=0` 关闭后台巡检 |
 | 调度器语义 | 纯函数 `resolveAutoCheckConfig` 校验区间（60000–2147483647 / 抖动 0–1），配置非法时明确关掉并在日志说明 |
 
+### v0.7：候选被藏起来 + 更新内容
+
+**现象**：宿主设了 `DSH_UPDATE_CHANNEL=rc`，最新 rc 标签 `dsh-v0.2.0-rc.2` 等于当前运行版本，
+semver 守卫判定「无需更新」；而 runtime.json 里已有一个试运行通过的候选 `0.2.1-alpha.2`，
+界面却只显示「已是最新」，既没有更新内容，也没有「重启生效」按钮。根因在可切换判定。
+
+| 变化 | 说明 |
+| --- | --- |
+| 可切换判定 | 三处（`check()` 的候选就绪、`startUpdate()` 的候选复用、`publicState.runtime.canSwitch`）原先都要求 `runningMatchesActive() !== true`；正常受管场景里当前入口**就是** active，条件恒假，候选被永久藏住。收敛为 `computeCanSwitch({ canaryOk, candidateEntry, currentEntry, entryExists })`：候选通过试运行、入口存在、且**不是当前正在运行的入口** |
+| 客户端同步 | `runtime.candidateIsRunning` 随 `canSwitch` 一起下发，客户端不再用 `matchesActive` 二次推断（这两处漂移就是缺陷来源） |
+| 更新内容 | 快照新增 `changes`：`total`（含 merge，与「落后 N 个提交」同口径）、`changed`（非 merge）、`fromVersion`/`toVersion`、按常规提交前缀的类型分布、最多 30 条明细（sha/说明/日期/作者） |
+| 跨通道提示 | 标签通道无更新时快照新增 `elsewhere`：最新 `dsh-v*` 标签、其版本、`upstream` 引用与领先提交数，界面据此说明「该通道没更新，但上游别处有」 |
+
+真实仓库实测（2026-10-09，运行 0.2.0-rc.2）：
+
+| 通道 | 结果 |
+| --- | --- |
+| `rc` | `behind=0`、`updateAvailable=false`、`elsewhere={ newestTag: dsh-v0.2.1-alpha.2, upstream: origin/master, upstreamAhead: 713 }` |
+| `nightly` | `behind=935`、`changes.total=935`、`0.2.0-rc.2 → 0.2.1-alpha.2`、类型分布 fix 147 / test 126 / docs 43 / feat 24 … |
+| 候选可切换 | `canSwitch=true`（旧逻辑下为 false，即用户看不到切换按钮的原因） |
+
+### v0.8：上游别处有更新时的一键更新
+
+**现象**：宿主环境是 `DSH_UPDATE_CHANNEL=rc`，运行的却是 0.2.1-alpha.2；rc 通道最新标签
+`dsh-v0.2.0-rc.2` 比运行版本旧，于是判定「无需更新」，界面只剩一行说明「上游最新
+dsh-v0.2.1-alpha.3」。提示是对的，但**不能点** —— 用户要么改环境变量重启，要么等
+rc 线发布，没有第三条路。
+
+| 变化 | 说明 |
+| --- | --- |
+| 归属通道 | `readElsewhere` 返回 `channel`：由最新标签推出（`-alpha.N` → alpha，`-rc.N` → rc，无后缀 → stable，否则 tag；没有标签则 nightly） |
+| 一次性通道覆盖 | `POST /api/update` 接受可选 body `{ channel }`；`startUpdate({ channel })` → `readSnapshot(repo, channel)`、`runUpdate(runId, channel)`、`resolveTarget(repo, channel)` 全部按本次通道走；非法通道返回 400 |
+| 不改环境变量 | 覆盖只作用于这一次构建与候选记录（`candidate.channel`），`DSH_UPDATE_CHANNEL` 保持不变 |
+| 提前构建 | 后台预构建在「选中通道没有更新、另一条发布线有更新的标签」时按那条通道提前构建候选（仍不自动重启），点按钮时通常只剩切换 |
+| 界面 | 提示行旁多一个按钮「更新到 {tag}」，只在当前通道无更新、且另一条发布线有**严格更新**的标签时出现 |
+| 假按钮回归 | 首版把「upstream 领先」也算成更新目标：运行版本正好等于最新标签（跑的就是那个发布，只是 master 又领先 10 个提交）时按钮写成「更新到 dsh-v0.2.1-alpha.3」——用户已经装了这个版本，点下去还会被 semver 守卫拒绝。现在 `elsewhereTarget` 只认严格更新的标签，分支领先不再单独成目标（`elsewhere` 为 null，界面只剩「已是最新」） |
+
+### v0.9：桌面版（Electron）不参与原地更新
+
+桌面版把 dsh 运行时放在应用包的 `app.asar` 里：外壳始终用自己的运行时拉起 Host
+（`apps/desktop/src/main.ts` 的 `runtimeResources()`），Host 退出还会被当成崩溃。
+插件在这类进程里既换不掉运行时，也不能重启服务。
+
+| 变化 | 说明 |
+| --- | --- |
+| 宿主判定 | `hostFacts()`：`process.versions.electron`、入口含 `.asar/`、或入口是 `dsh-desktop-host/lib/*` 都算桌面版，`canSelfUpdate=false` |
+| 拒绝更新 | `startUpdate` / `scheduleRestart` / `startAssist` / 后台预构建在桌面版里直接返回原因；`environment` 随 `/api/state` 下发 |
+| 界面 | 设置行只显示原因，不出现「立即更新」「重启生效」「让 dsh 帮忙修复」 |
+| 启动参数 | `restartArgsFrom()`：Electron 宿主的 argv 是 `[入口, profile 目录, …]` 而不是 `web`，入口在 asar 里时一律用 `['web']` |
+| 运行指针 | `active-entry` 只写普通 node 能打开的入口；桌面版入口写进去会让 `restart-web.sh` / `use-managed-dsh` 用普通 node 去跑，发现即删除并回退 PATH |
+| 官方更新器 | 桌面版设置行只留「检查桌面版更新」；点击先用 `lib/desktop.js` 查应用 feed，通过后才调用 preload 暴露的 `dshDesktop.updates.open()`（`dsh-desktop:updates-open` → 外壳的 `openUpdatePrompt()`），与菜单「检查更新…」同一条路径。普通浏览器拿不到这个桥，退回插件自己的 git 检查 |
+| 宿主识别 | 模式由服务端的 `environment.desktop` 决定，不看页面猜：桌面版托管的服务被浏览器打开时禁用检查按钮并提示去应用窗口，不退回 git 原地切换；普通 node 的 `dsh web` 照常走 git |
+| 版本线 | 桌面版只接受 rc 或正式版：`desktopVersionAllowed()` 拒绝 alpha/beta；feed 里有 alpha 时显示「已跳过」，不驱动应用更新器 |
+| feed 检查 | 读 `app-update.yml` 的 provider，并用界面给的当前通道（缺省取文件里的 channel）请求 `{channel}-mac.yml`（Windows 无平台后缀、Linux 带架构后缀），带 8s 超时；配置或网络失败时不驱动官方更新器，把原因写进设置行 |
+
+桌面版的 dsh 跟随应用更新；本插件只在普通 node 跑的 CLI（`dsh web`）里生效。
+
 ### 组件
 
 | 文件 | 职责 |
 | --- | --- |
 | `lib/util.js` | shell 转义、进程组回收、行缓冲、有界错误行缓冲、原子写文件；**可用 git 解析**（Xcode 许可拦住 `/usr/bin/git` 时自动改用 CLT/Xcode 自带 git，见下） |
 | `lib/probe.js` | 空闲端口、候选入口试运行（可登记/回收子进程）、loader 冲突解析、禁用 patch 生成 |
+| `lib/desktop.js` | 桌面版更新策略：读 `app-update.yml`、拼 feed URL、只放行 rc/正式版；Web 端不使用 |
 | `lib/semver.js` | 零依赖 semver 校验/比较：标签通道的「严格高于当前版本」判定（对齐官方 `valid()` + `gt()`） |
 | `scripts/switch.mjs` | 独立切换器：摘掉托管旧服务的 launchd 作业（keepalive 会把旧进程拉回来）→ 等旧进程退出 → 清端口残留 → 起新版本 → 校验 → 失败回滚 |
-| `scripts/selftest.mjs` | 纯函数/边界/失败分类单测（93 项）；`--integration` 真实 profile 试运行；`--pipeline` 全流水线 |
+| `scripts/selftest.mjs` | 纯函数/边界/失败分类单测（166 项）；`--integration` 真实 profile 试运行；`--pipeline` 全流水线 |
 | `scripts/repair.mjs` | 失败报告 CLI：摘要 / `--prompt` / `--json` / `--clear` / `--assist`（可 `--dry-run`） |
-| `scripts/clienttest.mjs` | 客户端渲染回归（123 项）：React/ctx stub 驱动 `lib/client.js`，覆盖 13 种 host state、事故原路径、迟到响应竞态、错误边界、zh/en 字典一致性 |
+| `scripts/clienttest.mjs` | 客户端渲染回归（285 项）：React/ctx stub 驱动 `lib/client.js`，覆盖 14 种 host state、事故原路径、迟到响应竞态、错误边界、zh/en 字典一致性 |
 | `scripts/switchtest.mjs` | 切换器沙箱集成测试：外部进程安全（绝不误杀）+ 成功路径 + 回滚路径，全程空闲端口 |
 | `scripts/use-managed-dsh.mjs` | 生成 `~/.local/bin/dsh` shim：终端 `dsh` 优先运行 `active-entry` 的受管版本，指针失效回退原命令；`--check` / `--remove` |
 | `lib/index.js` | 路由、状态机、蓝绿流水线、隔离重试、切换任务编排 |
@@ -176,7 +234,10 @@ PATH 的最前面（pnpm 里的 git 调用一并受益）。worktree 回溯主�
 - **切换器的清理口径已收紧**：只有命令行里出现本次 `prev.entry`/`new.entry` 的进程才会被
   清理（不再「任何 dsh web 都算自己人」）；宿主传的 launchd label 也只在确认作业属于旧进程时
   才摘。宁可拒绝清理并报错，也不误杀别的 dsh 实例。
+- **桌面版不支持原地更新**：运行时固定在 `app.asar`，外壳持有窗口与 Host；插件只解释原因，
+  不给更新入口。桌面版的 dsh 跟随应用自带的更新器。
 - 后台预构建目前是固定间隔 + 抖动（默认 30 分钟），失败后不指数退避（官方 schedule 有）。
+- 代理不可达时自动改直连重试（预算 180s / 空闲 120s）。直连本身不通时仍会失败，代价是比原来的即时失败多等一轮。
 
 ## 它做了什么
 

@@ -15,7 +15,7 @@
  */
 import { execFileSync, spawn } from 'node:child_process'
 import {
-  closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, statSync, writeFileSync,
+  closeSync, existsSync, mkdirSync, openSync, readFileSync, renameSync, rmSync, statSync, writeFileSync,
 } from 'node:fs'
 import path from 'node:path'
 
@@ -52,6 +52,10 @@ mkdirSync(path.dirname(STATUS_FILE), { recursive: true })
 function now() { return new Date().toISOString() }
 function sleep(ms) { return new Promise((resolve) => { setTimeout(resolve, ms) }) }
 function messageOf(error) { return error instanceof Error ? error.message : String(error) }
+/** 入口是否在 Electron 的 app.asar 里（普通 node 打不开这种路径）。 */
+function archivedEntry(entry) {
+  return typeof entry === 'string' && entry.split(path.sep).join('/').toLowerCase().includes('.asar/')
+}
 function appendLog(line) {
   try { writeFileSync(LOG_PATH, `[${now()}] [switch] ${line}\n`, { flag: 'a' }) } catch { /* 日志失败不影响切换 */ }
 }
@@ -254,8 +258,15 @@ function writeRuntimeActive(spec, extra) {
   }
   writeJsonAtomic(RUNTIME_FILE, { ...runtime, active, lastSwitchAt: now() }, 0o600)
   // 给 shell 用人眼可读的 pure-text 指针：dsh 函数守卫可以一行读出来。
+  // app.asar 里的入口只能由 Electron 打开：普通 node 用它必失败。
+  // 删掉指针，让 restart-web.sh / use-managed-dsh 回退到 PATH 上的 dsh。
+  const pointerFile = path.join(path.dirname(RUNTIME_FILE), 'active-entry')
+  if (archivedEntry(active.entry)) {
+    try { rmSync(pointerFile, { force: true }) } catch { /* 只是便利文件 */ }
+    return
+  }
   try {
-    writeFileSync(path.join(path.dirname(RUNTIME_FILE), 'active-entry'), active.entry + '\n')
+    writeFileSync(pointerFile, active.entry + '\n')
   } catch (error) {
     appendLog(`写入 active-entry 失败：${messageOf(error)}`)
   }

@@ -40,11 +40,30 @@ cd ~/.dsh/profiles/web && pnpm install
 后台默认每约 30 分钟检查一次上游并提前构建候选，所以多数时候点「立即更新」是**秒级**完成
 （已有同提交候选时实测 133 ms）。
 
+检测到新版本时，设置行会显示**更新内容**：`旧版本 → 新版本`、提交数、按类型（feat / fix /
+docs / refactor …）的分布，以及可展开的提交列表（最多 30 条，合并提交不计入明细）。
+
 ```sh
 export DSH_UPDATE_AUTO_RESTART=0   # 改回「更新 → 手动点重启生效」两步确认
 export DSH_UPDATE_CHANNEL=rc       # 避开 master 开发版：nightly / rc / alpha / stable / tag
 export DSH_UPDATE_AUTO_CHECK=0     # 关掉后台预构建巡检
 ```
+
+### 桌面版（Desktop）
+
+桌面版和 Web/CLI 端是两条更新线：
+
+- **Web / CLI**：插件跟随 git 通道（`nightly` / `rc` / `alpha` / `stable`），在副本里构建、试运行、切换；
+- **桌面版**：运行时固定在应用包的 `app.asar` 里，只能由应用自带的更新器升级，插件不原地更新。
+
+桌面版的设置行只说明原因，没有「立即更新」「重启生效」。「检查桌面版更新」先查应用更新源
+（`app-update.yml` 里的 feed），**只接受 rc 或更稳定的正式版**：版本号是 alpha 时直接跳过并显示
+原因，不会驱动应用更新器。检查通过后才唤起应用自带的更新器（与菜单「检查更新…」同一条路径），
+下载与安装交给应用完成。
+
+浏览器打开桌面版托管的地址时，插件不会给 git 更新入口：提示到桌面版应用窗口里检查更新。
+
+要用本插件，请在终端用 git 克隆跑 `dsh web`。
 
 <a id="config"></a>
 
@@ -63,6 +82,13 @@ export DSH_UPDATE_AUTO_CHECK=0     # 关掉后台预构建巡检
 
 标签通道带 semver 守卫：目标不高于当前运行版本时直接提示「无需更新」，不会降级，
 也不会做平级空转构建。
+
+另一条发布线发了**更新的标签**、而你选的通道没有更新时，设置行会给出
+**「更新到 dsh-v0.2.1-alpha.3」按钮**：点它只按那条通道更新这一次，不会改你的
+`DSH_UPDATE_CHANNEL`。后台预构建也会提前把这条通道的候选构建好，点下去通常只剩几秒的切换。
+
+运行版本已经是最新发布、只是 `upstream` 分支领先几个提交（nightly 的日常提交）时，
+不会出现这个按钮——那时只有正常的 nightly 更新路径，不会提示一个你已经装了的版本。
 
 <a id="failure"></a>
 
@@ -96,6 +122,21 @@ node scripts/repair.mjs --clear    # 清掉失败记录
 sudo xcodebuild -license accept
 ```
 
+<a id="proxy"></a>
+
+### 拉取上游失败 / 代理连不上
+
+报错里出现 `Failed to connect to 127.0.0.1 port 7897` 这类地址，通常是 git 配了本地代理、
+代理没启动。插件只在「连不上的正是代理本身」时用 `-c` 覆盖成直连重试一次，不改你的 git
+配置；日志里会看到 `代理连不上（…），改为直连重试`，直连也失败才报错。
+
+把代理开起来就能恢复走代理。确定不再用这个代理，可以删掉配置：
+
+```sh
+git config --global --unset http.proxy
+git config --global --unset https.proxy
+```
+
 <a id="update"></a>
 
 ## 更新与卸载
@@ -126,7 +167,7 @@ rm -rf ~/.dsh/dsh-auto-update         # 副本与运行指针，删掉不影响�
 ## 开发
 
 ```sh
-npm test                              # selftest 105 项 + clienttest 158 项
+npm test                              # selftest 166 项 + clienttest 285 项
 node scripts/selftest.mjs --pipeline  # 全流水线：全新副本构建 + 真实 profile 试运行（临时状态目录）
 node scripts/switchtest.mjs           # 切换器：外部进程安全 + 成功 + 回滚 + 版本绑定（空闲端口）
 node scripts/repair.mjs --prompt      # 最近一次失败交给 agent 的提示词
